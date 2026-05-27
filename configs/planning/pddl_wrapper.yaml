@@ -1,0 +1,7 @@
+PDDLWrapper:
+  Domain:
+    domain_path: data/pddl/agenticlab_human
+  output_dir: output/pddl
+  time_limit: 200
+  fast_downward_alias: "seq-sat-lama-2011"
+  fast_downward_path: third_party/downward/fast-downward.py

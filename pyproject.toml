@@ -1,0 +1,25 @@
+[project]
+name = "agenticlab_human"
+version = "0.1.0"
+description = "AgenticLab robot agent framework for humanoid"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "pyyaml",
+    "Pillow",
+    "openai",
+    "google-genai",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["agenticlab_human*"]
+
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"

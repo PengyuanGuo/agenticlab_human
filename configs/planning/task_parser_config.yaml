@@ -1,0 +1,24 @@
+TaskParser:
+  # Model for task parsing
+  # vlm_model_name: "qwen:qwen-vl-max" 
+  # vlm_model_name: "qwen:qwen3-vl-plus"
+  vlm_model_name: "openai:gpt-5.5-2026-04-23"
+  # vlm_model_name: "openai:chatgpt-4o-latest"
+  # vlm_model_name: "gemini:gemini-3-pro-preview"
+  # vlm_model_name: "gemini:gemini-robotics-er-1.5-preview"
+  # vlm_model_name: "gemini:gemini-3-flash-preview"
+  # vlm_model_name: "claude:claude-opus-4-5-20251101"
+  # vlm_model_name: "claude:claude-sonnet-4-20250514"
+  # vlm_model_name: "molmo_local:allenai/Molmo-7B-D-0924"
+  prompt_path: "configs/planning/task_parser_prompt.txt"
+  output_dir: "output/task_parser"
+  prompt_use_pddl_path: "configs/planning/task_parser_prompt_with_pddl.txt"
+  llm_config_path: "configs/llm/llm_interface_config.yaml"
+  use_pddl: True
+  pddl_domain_path: "data/pddl/agenticlab_human/stack_domain.pddl"
+  example_nl_path: "data/pddl/agenticlab_human/stack_example.nl"
+  example_pddl_path: "data/pddl/agenticlab_human/stack_example.pddl"
+  pddl_cfg: 
+    time_limit: 20
+    fast_downward_alias: "seq-sat-lama-2011"
+    fast_downward_path: third_party/downward/fast-downward.py

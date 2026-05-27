@@ -1,0 +1,188 @@
+{
+    "task_description": "Stack the cubes on the pink plate from bottom to top: Orange, Yellow, Green and Blue cubes.",
+    "objects_identified": [
+        {
+            "name": "orange-cube-1",
+            "type": "orange-cube",
+            "description": "an orange cube initially on the cyan plate with the green cube on top"
+        },
+        {
+            "name": "yellow-cube-1",
+            "type": "yellow-cube",
+            "description": "a yellow cube initially on top of the blue cube"
+        },
+        {
+            "name": "green-cube-1",
+            "type": "green-cube",
+            "description": "a green cube initially on top of the orange cube"
+        },
+        {
+            "name": "blue-cube-1",
+            "type": "blue-cube",
+            "description": "a blue cube initially on the cream plate with the yellow cube on top"
+        },
+        {
+            "name": "pink-plate-1",
+            "type": "pink-plate",
+            "description": "the empty pink plate that is the target base for the final stack"
+        },
+        {
+            "name": "cream-plate-1",
+            "type": "cream-plate",
+            "description": "a cream plate supporting the initial blue and yellow cube stack"
+        },
+        {
+            "name": "cyan-plate-1",
+            "type": "cyan-plate",
+            "description": "a cyan plate supporting the initial orange and green cube stack"
+        }
+    ],
+    "reasoning": "The task requires stacking four cubes on the pink plate in bottom-to-top order: orange, yellow, green, blue. In the scene, the yellow cube is on the blue cube, and the green cube is on the orange cube. The blue cube rests on a cream plate, the orange cube rests on a cyan plate, and the pink plate is empty and clear. The domain already contains the colored cube types, but specific colored plate types are added for the pink, cream, and cyan plates.",
+    "action_sequence": [
+        "(pick green-cube-1 orange-cube-1)",
+        "(place-on-object green-cube-1 yellow-cube-1)",
+        "(pick orange-cube-1 cyan-plate-1)",
+        "(place-on-object orange-cube-1 pink-plate-1)",
+        "(pick green-cube-1 yellow-cube-1)",
+        "(place-on-object green-cube-1 cyan-plate-1)",
+        "(pick yellow-cube-1 blue-cube-1)",
+        "(place-on-object yellow-cube-1 orange-cube-1)",
+        "(pick green-cube-1 cyan-plate-1)",
+        "(place-on-object green-cube-1 yellow-cube-1)",
+        "(pick blue-cube-1 cream-plate-1)",
+        "(place-on-object blue-cube-1 green-cube-1)"
+    ],
+    "elapsed_time": 96.42012119293213,
+    "timestamp": "2026-05-27T11:28:21.148975",
+    "updated_domain": "(define (domain vlmrobobench)\n  (:requirements :strips :typing)\n  (:types\n    cube cloth plate bowl mat paper - object\n    purple-cube blue-cube orange-cube yellow-cube green-cube - cube\n    pink-plate cream-plate cyan-plate - plate\n  )\n  (:predicates\n    (on-top-of ?o1 - object ?o2 - object)\n    (hand-empty)\n    (holding ?o - object)\n    (clear ?o - object)\n  )\n\n  (:action pick\n    :parameters (?obj - object ?underobj - object)\n    :precondition (and\n      (hand-empty)\n      (clear ?obj)\n      (on-top-of ?obj ?underobj)\n    )\n    :effect (and\n      (holding ?obj)\n      (clear ?underobj)\n      (not (hand-empty))\n      (not (on-top-of ?obj ?underobj))\n      (not (clear ?obj))\n    )\n  )\n\n  (:action place-on-object\n    :parameters (?obj - object ?target - object)\n    :precondition (and\n      (holding ?obj)\n      (clear ?target)\n    )\n    :effect (and\n      (on-top-of ?obj ?target)\n      (hand-empty)\n      (clear ?obj)\n      (not (clear ?target))\n      (not (holding ?obj))\n    )\n  )\n)",
+    "problem_pddl": "(define (problem vlmrobobench-stack-cubes-on-pink-plate)\n  (:domain vlmrobobench)\n\n  (:objects\n    orange-cube-1 - orange-cube\n    yellow-cube-1 - yellow-cube\n    green-cube-1 - green-cube\n    blue-cube-1 - blue-cube\n    pink-plate-1 - pink-plate\n    cream-plate-1 - cream-plate\n    cyan-plate-1 - cyan-plate\n  )\n\n  (:init\n    (on-top-of blue-cube-1 cream-plate-1)\n    (on-top-of yellow-cube-1 blue-cube-1)\n    (on-top-of orange-cube-1 cyan-plate-1)\n    (on-top-of green-cube-1 orange-cube-1)\n    (clear yellow-cube-1)\n    (clear green-cube-1)\n    (clear pink-plate-1)\n    (hand-empty)\n  )\n\n  (:goal\n    (and\n      (on-top-of orange-cube-1 pink-plate-1)\n      (on-top-of yellow-cube-1 orange-cube-1)\n      (on-top-of green-cube-1 yellow-cube-1)\n      (on-top-of blue-cube-1 green-cube-1)\n    )\n  )\n)",
+    "action_details": [
+        {
+            "action": "(pick green-cube-1 orange-cube-1)",
+            "action_name": "pick",
+            "parameters": [
+                "green-cube-1",
+                "orange-cube-1"
+            ],
+            "precondition": "(and\n      (hand-empty)\n      (clear ?obj)\n      (on-top-of ?obj ?underobj)\n    )",
+            "effect": "(and\n      (holding ?obj)\n      (clear ?underobj)\n      (not (hand-empty))\n      (not (on-top-of ?obj ?underobj))\n      (not (clear ?obj))\n    )\n  )"
+        },
+        {
+            "action": "(place-on-object green-cube-1 yellow-cube-1)",
+            "action_name": "place-on-object",
+            "parameters": [
+                "green-cube-1",
+                "yellow-cube-1"
+            ],
+            "precondition": "(and\n      (holding ?obj)\n      (clear ?target)\n    )",
+            "effect": "(and\n      (on-top-of ?obj ?target)\n      (hand-empty)\n      (clear ?obj)\n      (not (clear ?target))\n      (not (holding ?obj))\n    )\n  )\n)"
+        },
+        {
+            "action": "(pick orange-cube-1 cyan-plate-1)",
+            "action_name": "pick",
+            "parameters": [
+                "orange-cube-1",
+                "cyan-plate-1"
+            ],
+            "precondition": "(and\n      (hand-empty)\n      (clear ?obj)\n      (on-top-of ?obj ?underobj)\n    )",
+            "effect": "(and\n      (holding ?obj)\n      (clear ?underobj)\n      (not (hand-empty))\n      (not (on-top-of ?obj ?underobj))\n      (not (clear ?obj))\n    )\n  )"
+        },
+        {
+            "action": "(place-on-object orange-cube-1 pink-plate-1)",
+            "action_name": "place-on-object",
+            "parameters": [
+                "orange-cube-1",
+                "pink-plate-1"
+            ],
+            "precondition": "(and\n      (holding ?obj)\n      (clear ?target)\n    )",
+            "effect": "(and\n      (on-top-of ?obj ?target)\n      (hand-empty)\n      (clear ?obj)\n      (not (clear ?target))\n      (not (holding ?obj))\n    )\n  )\n)"
+        },
+        {
+            "action": "(pick green-cube-1 yellow-cube-1)",
+            "action_name": "pick",
+            "parameters": [
+                "green-cube-1",
+                "yellow-cube-1"
+            ],
+            "precondition": "(and\n      (hand-empty)\n      (clear ?obj)\n      (on-top-of ?obj ?underobj)\n    )",
+            "effect": "(and\n      (holding ?obj)\n      (clear ?underobj)\n      (not (hand-empty))\n      (not (on-top-of ?obj ?underobj))\n      (not (clear ?obj))\n    )\n  )"
+        },
+        {
+            "action": "(place-on-object green-cube-1 cyan-plate-1)",
+            "action_name": "place-on-object",
+            "parameters": [
+                "green-cube-1",
+                "cyan-plate-1"
+            ],
+            "precondition": "(and\n      (holding ?obj)\n      (clear ?target)\n    )",
+            "effect": "(and\n      (on-top-of ?obj ?target)\n      (hand-empty)\n      (clear ?obj)\n      (not (clear ?target))\n      (not (holding ?obj))\n    )\n  )\n)"
+        },
+        {
+            "action": "(pick yellow-cube-1 blue-cube-1)",
+            "action_name": "pick",
+            "parameters": [
+                "yellow-cube-1",
+                "blue-cube-1"
+            ],
+            "precondition": "(and\n      (hand-empty)\n      (clear ?obj)\n      (on-top-of ?obj ?underobj)\n    )",
+            "effect": "(and\n      (holding ?obj)\n      (clear ?underobj)\n      (not (hand-empty))\n      (not (on-top-of ?obj ?underobj))\n      (not (clear ?obj))\n    )\n  )"
+        },
+        {
+            "action": "(place-on-object yellow-cube-1 orange-cube-1)",
+            "action_name": "place-on-object",
+            "parameters": [
+                "yellow-cube-1",
+                "orange-cube-1"
+            ],
+            "precondition": "(and\n      (holding ?obj)\n      (clear ?target)\n    )",
+            "effect": "(and\n      (on-top-of ?obj ?target)\n      (hand-empty)\n      (clear ?obj)\n      (not (clear ?target))\n      (not (holding ?obj))\n    )\n  )\n)"
+        },
+        {
+            "action": "(pick green-cube-1 cyan-plate-1)",
+            "action_name": "pick",
+            "parameters": [
+                "green-cube-1",
+                "cyan-plate-1"
+            ],
+            "precondition": "(and\n      (hand-empty)\n      (clear ?obj)\n      (on-top-of ?obj ?underobj)\n    )",
+            "effect": "(and\n      (holding ?obj)\n      (clear ?underobj)\n      (not (hand-empty))\n      (not (on-top-of ?obj ?underobj))\n      (not (clear ?obj))\n    )\n  )"
+        },
+        {
+            "action": "(place-on-object green-cube-1 yellow-cube-1)",
+            "action_name": "place-on-object",
+            "parameters": [
+                "green-cube-1",
+                "yellow-cube-1"
+            ],
+            "precondition": "(and\n      (holding ?obj)\n      (clear ?target)\n    )",
+            "effect": "(and\n      (on-top-of ?obj ?target)\n      (hand-empty)\n      (clear ?obj)\n      (not (clear ?target))\n      (not (holding ?obj))\n    )\n  )\n)"
+        },
+        {
+            "action": "(pick blue-cube-1 cream-plate-1)",
+            "action_name": "pick",
+            "parameters": [
+                "blue-cube-1",
+                "cream-plate-1"
+            ],
+            "precondition": "(and\n      (hand-empty)\n      (clear ?obj)\n      (on-top-of ?obj ?underobj)\n    )",
+            "effect": "(and\n      (holding ?obj)\n      (clear ?underobj)\n      (not (hand-empty))\n      (not (on-top-of ?obj ?underobj))\n      (not (clear ?obj))\n    )\n  )"
+        },
+        {
+            "action": "(place-on-object blue-cube-1 green-cube-1)",
+            "action_name": "place-on-object",
+            "parameters": [
+                "blue-cube-1",
+                "green-cube-1"
+            ],
+            "precondition": "(and\n      (holding ?obj)\n      (clear ?target)\n    )",
+            "effect": "(and\n      (on-top-of ?obj ?target)\n      (hand-empty)\n      (clear ?obj)\n      (not (clear ?target))\n      (not (holding ?obj))\n    )\n  )\n)"
+        }
+    ],
+    "goal_conditions": [
+        "(on-top-of orange-cube-1 pink-plate-1)",
+        "(on-top-of yellow-cube-1 orange-cube-1)",
+        "(on-top-of green-cube-1 yellow-cube-1)",
+        "(on-top-of blue-cube-1 green-cube-1)"
+    ],
+    "token_usage": 6966
+}
