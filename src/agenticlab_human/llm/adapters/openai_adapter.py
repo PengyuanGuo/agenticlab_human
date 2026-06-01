@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 if __name__ == "__main__":
-    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../.."))
     sys.path.insert(0, project_root)
     from vlm_robobench.llm_interface.llm_base import BaseLLMClient
     from vlm_robobench.llm_interface.llm_utils import parse_json_response, encode_image
@@ -17,6 +17,13 @@ else:
 
 
 logger = logging.getLogger(__name__)
+
+def _get_project_root() -> Path:
+    for parent in Path(__file__).resolve().parents:
+        if (parent / "pyproject.toml").exists():
+            return parent
+    return Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../..")))
+
 
 class OpenAIAdapter(BaseLLMClient):
     """Adapter for OpenAI LLMs"""
@@ -30,12 +37,7 @@ class OpenAIAdapter(BaseLLMClient):
         self.client = OpenAI(api_key=self.api_key)
         
         # Set up token counter CSV path
-        if __name__ != "__main__":
-            # Get project root (3 levels up from this file)
-            self.project_root = Path(__file__).resolve().parents[3]
-        else:
-            self.project_root = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../..")))
-        
+        self.project_root = _get_project_root()
         self.token_csv_path = self.project_root / "output" / "token_counter" / "total_token.csv"
     
     def _log_token_count(self, total_tokens: int):

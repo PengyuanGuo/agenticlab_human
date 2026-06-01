@@ -18,6 +18,13 @@ else:
 
 logger = logging.getLogger(__name__)
 
+def _get_project_root() -> Path:
+    for parent in Path(__file__).resolve().parents:
+        if (parent / "pyproject.toml").exists():
+            return parent
+    return Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../..")))
+
+
 class QwenAdapter(BaseLLMClient):
     """Adapter for Qwen LLMs"""
     
@@ -31,12 +38,7 @@ class QwenAdapter(BaseLLMClient):
                              base_url=config.get("base_url","https://dashscope-intl.aliyuncs.com/compatible-mode/v1"))
         
         # Set up token counter CSV path
-        if __name__ != "__main__":
-            # Get project root (3 levels up from this file)
-            self.project_root = Path(__file__).resolve().parents[3]
-        else:
-            self.project_root = Path(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../..")))
-        
+        self.project_root = _get_project_root()
         self.token_csv_path = self.project_root / "output" / "token_counter" / "total_token.csv"
     
     def _log_token_count(self, total_tokens: int):

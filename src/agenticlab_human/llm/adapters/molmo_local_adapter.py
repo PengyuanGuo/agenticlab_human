@@ -7,7 +7,7 @@ import os
 import sys
 
 if __name__ == "__main__":
-    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../../.."))
     sys.path.insert(0, project_root)
     from vlm_robobench.llm_interface.llm_base import BaseLLMClient
     from vlm_robobench.llm_interface.llm_utils import parse_json_response
