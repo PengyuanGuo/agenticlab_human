@@ -16,7 +16,7 @@ from agenticlab_human.execution.action_utils import (
     extract_pick_objects,
 )
 from agenticlab_human.perception.backend.grasp_backend import GraspBackend, GraspCandidate
-from agenticlab_human.perception.backend.perception_backend import BBox, PerceptionBackend
+from agenticlab_human.perception.backend.perception_backend import BBox, DetectionResult, PerceptionBackend
 
 
 @runtime_checkable
@@ -98,7 +98,8 @@ class ExecutionContext:
             return report
 
         self.rgb, self.depth = self.scene_provider.capture_rgbd()
-        self.bboxes = self.detector.detect(self.rgb, interested_objects)
+        detection_output = self.detector.detect(self.rgb, interested_objects)
+        self.bboxes = _coerce_detection_output_to_bboxes(detection_output, interested_objects)
         self.object_states = {
             name: {"stale": False, "last_location": None}
             for name in interested_objects
@@ -168,7 +169,8 @@ class ExecutionContext:
             return False
         self.rgb, self.depth = self.scene_provider.capture_rgbd()
         refreshed = self.detector.detect(self.rgb, [object_name])
-        self.bboxes[object_name] = refreshed.get(object_name, [])
+        refreshed_bboxes = _coerce_detection_output_to_bboxes(refreshed, [object_name])
+        self.bboxes[object_name] = refreshed_bboxes.get(object_name, [])
 
         bbox = self.get_bbox(object_name)
         if self.grasp_planner and bbox:
@@ -189,3 +191,15 @@ class ExecutionContext:
             "grasp_counts": {name: len(items) for name, items in self.grasps.items()},
             "stale_objects": sorted(self.stale_objects),
         }
+
+
+def _coerce_detection_output_to_bboxes(
+    detection_output: Any,
+    object_names: Sequence[str],
+) -> Dict[str, List[BBox]]:
+    if isinstance(detection_output, DetectionResult):
+        grouped = {name: [] for name in object_names}
+        for label, bboxes in detection_output.to_bboxes().items():
+            grouped.setdefault(label, []).extend(bboxes)
+        return grouped
+    return detection_output

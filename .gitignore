@@ -8,3 +8,11 @@ output/
 Log/
 src/agenticlab_human/output/
 third_party/downward
+
+train_yolo/datasets
+train_yolo/raw
+train_yolo/runs
+
+
+*.pt
+*.ts

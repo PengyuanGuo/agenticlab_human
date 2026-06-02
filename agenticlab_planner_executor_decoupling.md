@@ -226,10 +226,20 @@ rotation =
 width = 0.08437179774045944
 ```
 
+测试 place pose, 直接规定 6D pose， 不经过其他
+```text
+Pose: [ 0.13080995  1.04807103 -0.43973777 -2.41776079  1.96632273  0.10142964]
+> j
+rad: [ 1.23634565  0.44019684  0.13010663  1.413481    0.46857399  1.00741005
+ -0.53807032]
+deg: [ 70.83738769  25.2214212    7.45456067  80.98649555  26.84731187
+  57.72034407 -30.82915848]
+```
+
 默认命令只验证 data flow，不连接、不执行机器人：
 
 ```bash
-PYTHONPATH=src /usr/bin/python3 -m agenticlab_human.execution.action \
+PYTHONPATH=src /home/agenticlab/miniforge3/envs/xiaotuo_audio/bin/python -m agenticlab_human.execution.action \
   --plan data/data_for_test/task_parser/execution/action_sequence.json \
   --backend flexiv \
   --test-grasp-camera-pose

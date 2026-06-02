@@ -153,11 +153,8 @@ if __name__ == "__main__":
 
     import yaml
 
-    try:
-        from .flexiv_controller import FlexivController
-    except ImportError:
-        from flexiv_controller import FlexivController
-
+    from agenticlab_human.execution.robot.flexiv.flexiv_controller import FlexivController
+    
     _REPO_ROOT = Path(__file__).resolve().parents[5]
     _CONFIG_PATH = _REPO_ROOT / "configs" / "robot" / "flexiv_config.yaml"
 

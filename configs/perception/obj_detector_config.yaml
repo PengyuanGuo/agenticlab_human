@@ -1,0 +1,22 @@
+ObjDetector:
+  method: "vlm" # Options: "vlm", "langsam", "qwen_local", "molmo_local", "yolo_world"
+  # output_dir: "output/obj_detector"
+  # vlm_model: "qwen:qwen-vl-max"
+  vlm_model: "qwen:qwen3-vl-plus-2025-12-19"
+  # vlm_model: "openai:gpt-5.5-2026-04-23"  
+  # vlm_model: "openai:chatgpt-4o-latest"
+  # vlm_model: "gemini:gemini-3-flash-preview"
+  # vlm_model: "gemini:gemini-3.1-pro-preview"
+  # vlm_model: "gemini:gemini-robotics-er-1.5-preview"
+  # vlm_model: "claude:claude-opus-4-5-20251101"
+  # vlm_model: "claude:claude-sonnet-4-5-20250929"
+  prompt_path: "configs/prompt/detect_all_obj_prompt.txt"
+  molmo_prompt_path: "configs/prompt/detect_obj_molmo_prompt.txt"
+  max_iterations: 5
+
+YoloWorldDetector:
+  model_path: "yolo26s.pt"
+  model_type: "auto"  # auto/world/yoloe/regular
+  confidence: 0.001
+  image_size: 1280
+  output_dir: "output/perception/yolo_world"

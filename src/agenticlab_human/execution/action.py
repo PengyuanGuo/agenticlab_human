@@ -249,6 +249,26 @@ def _inject_test_grasp_camera_pose(context: ExecutionContext, action_sequence: A
         )
     ]
 
+def _inject_test_place_pose(context: ExecutionContext, action_sequence: ActionSequence) -> None:
+    _PLACE_ACTION_NAMES = {"place-on-object", "place-on-surface", "place-on-table", "place-in-container"}
+    _TARGET_ARG_KEYS = ("target", "surface", "location", "container")
+
+    place_targets = [
+        next(
+            (action.args[key] for key in _TARGET_ARG_KEYS if action.args.get(key)),
+            None,
+        )
+        for action in action_sequence.actions
+        if action.name in _PLACE_ACTION_NAMES
+    ]
+    place_targets = [t for t in place_targets if t]
+    if not place_targets:
+        raise ValueError("Cannot inject test place pose: ActionSequence has no place action with a target.")
+
+    test_place_pose = [0.13080995, 1.04807103, -0.43973777, -2.41776079, 1.96632273, 0.10142964]
+    target_name = place_targets[0]
+    context.object_states.setdefault(target_name, {})["pose"] = test_place_pose
+
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Execute or dry-run an ActionSequence.")
