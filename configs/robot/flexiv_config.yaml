@@ -1,0 +1,54 @@
+Flexiv:
+  robot_sn: "Rizon4s-063239"                     # left: Rizon4s-063239 Right: Rizon4s-063215
+  local_ip_whitelist: ["192.168.100.2"]          # 多网卡时填本机网卡 IP，如 ["192.168.100.2"]
+
+  # Motion speed limits
+  max_cartesian_speed: 0.1        # m/s
+  max_cartesian_acceleration: 0.1 # m/s²
+  max_joint_speed: 0.5            # rad/s
+  max_joint_acceleration: 0.5    # rad/s²
+
+  # Cartesian workspace safety limits (robot base frame, metres)
+  cartesian_limits_m:
+    x: [-0.5, 0.5]
+    y: [0.9, 1.5]
+    z: [-0.6, 0.6]
+
+  # Home pose — 7 joint angles in degrees, executed via MoveJ
+  # home_joints_deg: [12.16299938, 66.03607207, -7.44347015, 90.81264475, 79.42907582, -0.86278784, -34.09553936] # 0514,tested with picknplace
+  home_joints_deg: [ 87.54493882,  67.11202494,  10.30499412, 104.3307844,    2.56086844, 39.43109872,   9.92948569] #  elbow up
+  # home_joints_deg: [ -89.78571215, -104.83459965,   -6.45145134, -107.00767897,  169.86821168, 26.83150681,   -6.994836  ]   # Right arm camera pose
+ 
+
+  # IK-based Cartesian motion tuning
+  joint_limits_rad: # optional override: q7 放宽到 [-175, 175] deg; default reads robot.info()
+    min: [-2.79252672, -2.26892686, -2.96705675, -1.86750674, -2.96705675, -1.39626682, -3.054]
+    max: [2.79252672, 2.26892686, 2.96705675, 2.68780684, 2.96705675, 4.53785658, 3.054]
+  joint_limit_margin_deg: 0     # deg — reject IK solutions too close to joint limits
+  singularity_check_enabled: true
+  singularity_score_threshold: 15.0 # Flexiv configuration_score: poor < 20, medium 20-40, good > 40
+  ik_interpolation_enabled: false  # sample TCP path before IK to keep approach→grasp close to linear
+  ik_max_linear_step_m: 0.03      # m — max Cartesian distance between IK waypoints
+  ik_max_angular_step_deg: 10.0   # deg — max orientation change between IK waypoints
+  collision_check_enabled: false  # reserved; IK provides joints for future collision checking
+  verbose: false
+
+  # MovePTP tuning
+  moveptp_joint4_prefer_delta_deg: 30.0 # deg — MovePTP preferred A4 clamp around current joint angle
+
+  # Primitive execution tuning
+  primitive:
+    move_timeout: 30              # s — MoveL / MoveJ timeout
+    home_timeout: 30              # s — Home move timeout
+    check_interval: 0.5           # s — polling interval for primitive completion
+    ft_zero_timeout: 15           # s — ZeroFTSensor timeout
+  
+
+
+Gripper:
+  name: "Flexiv-GN01"             # device name in Flexiv Elements → Settings → Device
+  open_width: 0.09                # m — fully open
+  close_width: 0.005              # m — fully closed
+  default_velocity: 0.1           # m/s
+  default_force_limit: 25         # N — max contact force during position control
+  init_wait_sec: 8                # s — timeout for init_gripper() stroke to finish

@@ -1,0 +1,11 @@
+Graspnet:
+  checkpoint_path_kinect: "data/checkpoints/minkuresunet_kinect.tar"
+  checkpoint_path_realsense: "data/checkpoints/minkuresunet_realsense.tar"
+  voxel_size: 0.005       # Voxel Size for sparse convolution
+  voxel_size_cd: 0.01     # Voxel Size for collision detection
+  collision_thresh: 0.01  # Collision Threshold in collision detection [default: 0.01]
+  approach_dist: 0.05
+  num_point: 15000
+  seed_feat_dim: 512
+  angle_threshold: 30
+  grasp_max_width: 0.09
