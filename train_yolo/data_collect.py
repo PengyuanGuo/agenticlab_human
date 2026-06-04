@@ -49,6 +49,7 @@ class SessionConfig:
     session: str
     camera: str
     fps: float
+    start_delay_s: float
     scene: str
     lighting: str
     objects: list[str]
@@ -163,6 +164,7 @@ def collect_from_camera(args: argparse.Namespace) -> int:
         session=session,
         camera=args.which_cam,
         fps=float(args.fps),
+        start_delay_s=float(args.start_delay_s),
         scene=args.scene,
         lighting=args.lighting,
         objects=objects,
@@ -186,6 +188,12 @@ def collect_from_camera(args: argparse.Namespace) -> int:
         with CameraCapture(args.which_cam) as camera:
             for _ in range(max(0, int(args.warmup_frames))):
                 camera.capture()
+
+            if args.start_delay_s > 0:
+                print(f"Waiting {args.start_delay_s:g}s before saving frames. Arrange the scene now.")
+                time.sleep(float(args.start_delay_s))
+                start_time = time.monotonic()
+                next_save_time = start_time
 
             while True:
                 now = time.monotonic()
@@ -391,6 +399,7 @@ def build_parser() -> argparse.ArgumentParser:
     collect.add_argument("--duration-s", type=float, default=None, help="Stop after this many seconds.")
     collect.add_argument("--max-frames", type=int, default=None, help="Stop after saving this many frames.")
     collect.add_argument("--warmup-frames", type=int, default=10)
+    collect.add_argument("--start-delay-s", type=float, default=0.0, help="Wait before saving the first frame.")
     collect.add_argument("--preview", action="store_true", help="Show RGB preview. Press q to stop.")
     collect.add_argument("--jpg-quality", type=int, default=95)
     collect.add_argument("--scene", default="agenticlab_tabletop")

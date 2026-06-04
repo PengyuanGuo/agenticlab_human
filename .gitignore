@@ -16,3 +16,4 @@ train_yolo/runs
 
 *.pt
 *.ts
+datasets/
