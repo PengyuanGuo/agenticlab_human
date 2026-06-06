@@ -1,0 +1,231 @@
+"""FastAPI service for one-shot RGB-D capture and discrete X5 commands."""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import time
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Any
+
+import uvicorn
+import yaml
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse, Response
+
+from agenticlab_human.execution.robot.x5.camera import (
+    MockRGBDCamera,
+    OrbbecRGBDCamera,
+    RGBDCamera,
+)
+from agenticlab_human.execution.robot.x5.contracts import (
+    HealthResponse,
+    RGBD_MEDIA_TYPE,
+    RobotCommandRequest,
+    RobotCommandResponse,
+    encode_rgbd_frame,
+)
+from agenticlab_human.execution.robot.x5.x5_controller import MockX5Controller, X5Controller
+
+
+DEFAULT_CONFIG_PATH = str(
+    Path(__file__).resolve().parents[5] / "configs" / "robot" / "x5_config.yaml"
+)
+
+
+class HardwareRuntime:
+    """Keep camera and robot SDK calls on stable, dedicated threads."""
+
+    def __init__(self, camera: RGBDCamera, controller: X5Controller) -> None:
+        self.camera = camera
+        self.controller = controller
+        self._camera_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="x5-camera")
+        self._robot_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="x5-robot")
+
+    async def start(self) -> None:
+        await asyncio.gather(
+            self._camera_call(self.camera.initialize),
+            self._robot_call(self.controller.initialize),
+        )
+
+    async def stop(self) -> None:
+        await asyncio.gather(
+            self._camera_call(self.camera.shutdown),
+            self._robot_call(self.controller.shutdown),
+            return_exceptions=True,
+        )
+        self._camera_executor.shutdown(wait=True)
+        self._robot_executor.shutdown(wait=True)
+
+    async def capture(self):
+        return await self._camera_call(self.camera.capture)
+
+    async def camera_health(self):
+        return await self._camera_call(self.camera.health)
+
+    async def robot_health(self):
+        return await self._robot_call(self.controller.health)
+
+    async def robot_state(self):
+        return await self._robot_call(self.controller.get_state)
+
+    async def execute(self, command):
+        return await self._robot_call(self.controller.execute, command)
+
+    async def _camera_call(self, func, *args):
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self._camera_executor, func, *args)
+
+    async def _robot_call(self, func, *args):
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self._robot_executor, func, *args)
+
+
+def create_app(
+    camera: RGBDCamera | None = None,
+    controller: X5Controller | None = None,
+) -> FastAPI:
+    """Create an injectable app; mocks are the default until hardware is wired."""
+
+    runtime = HardwareRuntime(
+        camera=camera or MockRGBDCamera(),
+        controller=controller or MockX5Controller(),
+    )
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
+        try:
+            await runtime.start()
+            yield
+        finally:
+            await runtime.stop()
+
+    app = FastAPI(
+        title="AgenticLab X5 Control Server",
+        version="0.1.0",
+        lifespan=lifespan,
+    )
+    app.state.hardware = runtime
+
+    @app.get("/v1/health", response_model=HealthResponse)
+    async def health() -> HealthResponse:
+        camera_health, robot_health = await asyncio.gather(
+            runtime.camera_health(),
+            runtime.robot_health(),
+        )
+        status = "ok" if camera_health.ready and robot_health.ready else "degraded"
+        return HealthResponse(
+            status=status,
+            camera=camera_health,
+            robot=robot_health,
+        )
+
+    @app.post(
+        "/v1/camera/capture",
+        response_class=Response,
+        responses={200: {"content": {RGBD_MEDIA_TYPE: {}}}},
+    )
+    async def capture_rgbd() -> Response:
+        frame = await runtime.capture()
+        return Response(
+            content=encode_rgbd_frame(frame),
+            media_type=RGBD_MEDIA_TYPE,
+            headers={
+                "X-Frame-Id": frame.frame_id,
+                "X-Timestamp-Ns": str(frame.timestamp_ns),
+            },
+        )
+
+    @app.post("/v1/robot/command", response_model=RobotCommandResponse)
+    async def robot_command(request: RobotCommandRequest):
+        started_ns = time.perf_counter_ns()
+        state_before = await runtime.robot_state()
+        accepted_command = request.command.model_dump(mode="json")
+        try:
+            await runtime.execute(request.command)
+            state_after = await runtime.robot_state()
+            return RobotCommandResponse(
+                request_id=request.request_id,
+                success=True,
+                accepted_command=accepted_command,
+                state_before=state_before,
+                state_after=state_after,
+                server_timestamp_ns=time.time_ns(),
+                duration_ms=(time.perf_counter_ns() - started_ns) / 1_000_000.0,
+            )
+        except (RuntimeError, ValueError) as exc:
+            state_after = await runtime.robot_state()
+            response = RobotCommandResponse(
+                request_id=request.request_id,
+                success=False,
+                accepted_command=accepted_command,
+                state_before=state_before,
+                state_after=state_after,
+                server_timestamp_ns=time.time_ns(),
+                duration_ms=(time.perf_counter_ns() - started_ns) / 1_000_000.0,
+                error=str(exc),
+            )
+            return JSONResponse(status_code=400, content=response.model_dump(mode="json"))
+
+    return app
+
+
+def create_app_from_config(config_path: str = DEFAULT_CONFIG_PATH) -> tuple[FastAPI, dict[str, Any]]:
+    config = yaml.safe_load(Path(config_path).read_text()) or {}
+    camera_config = config.get("camera", {})
+    robot_config = config.get("robot", {})
+
+    camera_backend = camera_config.get("backend", "mock")
+    if camera_backend == "mock":
+        camera: RGBDCamera = MockRGBDCamera(
+            width=int(camera_config.get("width", 320)),
+            height=int(camera_config.get("height", 240)),
+            depth_mm=float(camera_config.get("depth_mm", 800.0)),
+        )
+    elif camera_backend == "orbbec":
+        camera = OrbbecRGBDCamera(
+            which_cam=str(camera_config.get("which_cam", "Orbbec")),
+            color_size=(
+                int(camera_config.get("width", 1280)),
+                int(camera_config.get("height", 720)),
+            ),
+            color_fps=int(camera_config.get("fps", 30)),
+            timeout_ms=int(camera_config.get("timeout_ms", 1000)),
+            max_capture_attempts=int(camera_config.get("max_capture_attempts", 30)),
+            max_sync_delta_ms=float(camera_config.get("max_sync_delta_ms", 20.0)),
+        )
+    else:
+        raise ValueError(f"unsupported camera backend: {camera_backend}")
+
+    if robot_config.get("backend", "mock") != "mock":
+        raise ValueError("only the mock robot backend is implemented")
+
+    controller = MockX5Controller(
+        arms=robot_config.get("arms", ["left", "right"]),
+        initial_joints_rad=robot_config.get("initial_joints_rad", [0.0] * 7),
+    )
+    return create_app(camera=camera, controller=controller), config.get("server", {})
+
+
+app = create_app()
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Run the AgenticLab X5 HTTP server.")
+    parser.add_argument("--config", default=DEFAULT_CONFIG_PATH)
+    parser.add_argument("--host")
+    parser.add_argument("--port", type=int)
+    args = parser.parse_args()
+
+    configured_app, server_config = create_app_from_config(args.config)
+    uvicorn.run(
+        configured_app,
+        host=args.host or server_config.get("host", "0.0.0.0"),
+        port=args.port or int(server_config.get("port", 8000)),
+    )
+
+
+if __name__ == "__main__":
+    main()

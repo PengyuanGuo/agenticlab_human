@@ -13,7 +13,15 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "httpx",
     "pytest",
+]
+x5 = [
+    "fastapi",
+    "opencv-python",
+    "pydantic",
+    "requests",
+    "uvicorn",
 ]
 
 [tool.setuptools.packages.find]

@@ -16,7 +16,10 @@ import cv2
 import numpy as np
 from PIL import Image
 
-from agenticlab_human.perception.camera.orbbec_capture import OrbbecCameraCapture
+from agenticlab_human.perception.camera.orbbec_capture import (
+    OrbbecCameraCapture,
+    RGBDCapture,
+)
 
 SUPPORTED_CAMERAS = ("Orbbec", "FemtoBolt", "Gemini305")
 
@@ -27,13 +30,28 @@ class CameraCapture:
     Returns RGB color frames and aligned depth frames in millimeters.
     """
 
-    def __init__(self, which_cam: str = "Orbbec"):
+    def __init__(
+        self,
+        which_cam: str = "Orbbec",
+        *,
+        color_size: Tuple[int, int] = (1280, 720),
+        color_fps: int = 30,
+        timeout_ms: int = 1000,
+        max_capture_attempts: int = 30,
+        max_sync_delta_ms: float = 20.0,
+    ):
         if which_cam not in SUPPORTED_CAMERAS:
             supported = ", ".join(SUPPORTED_CAMERAS)
             raise ValueError(f"Unsupported camera type: {which_cam}. Use one of: {supported}")
 
         self.which_cam = which_cam
-        self._camera = OrbbecCameraCapture()
+        self._camera = OrbbecCameraCapture(
+            color_size=color_size,
+            color_fps=color_fps,
+            timeout_ms=timeout_ms,
+            max_capture_attempts=max_capture_attempts,
+            max_sync_delta_ms=max_sync_delta_ms,
+        )
 
     def capture(self) -> Tuple[np.ndarray, np.ndarray]:
         """Capture one RGB image and aligned depth image.
@@ -43,6 +61,10 @@ class CameraCapture:
             depth_image: float32 depth in millimeters, shape (H, W)
         """
         return self._camera.capture()
+
+    def capture_with_metadata(self) -> RGBDCapture:
+        """Capture RGB-D with runtime intrinsics and synchronized timestamps."""
+        return self._camera.capture_with_metadata()
 
     def capture_pil(self) -> Image.Image:
         """Capture one RGB image as a PIL image for VLM/planner use."""
