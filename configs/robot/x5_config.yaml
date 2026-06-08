@@ -2,7 +2,7 @@ server:
   host: "0.0.0.0"
   port: 8000
 
-# Phase 2: real Orbbec camera with the robot controller kept in mock mode.
+# Real Orbbec camera + real X5 controller for Server PC deployment.
 camera:
   backend: "orbbec"
   which_cam: "Orbbec"
@@ -14,6 +14,28 @@ camera:
   max_sync_delta_ms: 20.0
 
 robot:
-  backend: "mock"
-  arms: ["left", "right"]
-  initial_joints_rad: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+  backend: "x5"
+  arms: ["left"]
+  mode: 100
+  remote: false
+  enable_servo_on_start: true
+  stop_on_shutdown: false
+  default_speed_ratio: 0.05
+  max_command_speed_ratio: 0.10
+  max_joint_delta_deg: 5.0
+  move_timeout_ms: 60000
+  joint_limits_deg:
+    - [-170.0, 170.0]
+    - [-30.0, 90.0]
+    - [-155.0, 155.0]
+    - [-30.0, 120.0]
+    - [-168.0, 168.0]
+    - [-30.0, 100.0]
+    - [-170.0, 170.0]
+  left:
+    robot_ip: "192.168.1.7"
+    # home_joints_deg: [-24, 10, -53, 102, 101, 80, -18] # gripper facing down
+    # head_joints_deg: [0, 28]
+    home_joints_deg: [-49, 55, -18, 90, 0, 100, -18] # calibration home pose
+    head_joints_deg: [0, 28]
+

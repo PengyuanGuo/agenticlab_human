@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import math
 import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
@@ -27,7 +28,11 @@ from agenticlab_human.execution.robot.x5.contracts import (
     RobotCommandResponse,
     encode_rgbd_frame,
 )
-from agenticlab_human.execution.robot.x5.x5_controller import MockX5Controller, X5Controller
+from agenticlab_human.execution.robot.x5.x5_controller import (
+    MockX5Controller,
+    RealX5Controller,
+    X5Controller,
+)
 
 
 DEFAULT_CONFIG_PATH = str(
@@ -199,14 +204,73 @@ def create_app_from_config(config_path: str = DEFAULT_CONFIG_PATH) -> tuple[Fast
     else:
         raise ValueError(f"unsupported camera backend: {camera_backend}")
 
-    if robot_config.get("backend", "mock") != "mock":
-        raise ValueError("only the mock robot backend is implemented")
-
-    controller = MockX5Controller(
-        arms=robot_config.get("arms", ["left", "right"]),
-        initial_joints_rad=robot_config.get("initial_joints_rad", [0.0] * 7),
-    )
+    robot_backend = robot_config.get("backend", "mock")
+    if robot_backend == "mock":
+        controller = MockX5Controller(
+            arms=robot_config.get("arms", ["left", "right"]),
+            initial_joints_rad=_mock_initial_joints_rad(robot_config),
+        )
+    elif robot_backend == "x5":
+        controller = RealX5Controller(
+            arm_configs=_build_x5_arm_configs(robot_config),
+            mode=int(robot_config.get("mode", 100)),
+            remote=bool(robot_config.get("remote", False)),
+            enable_servo_on_start=bool(robot_config.get("enable_servo_on_start", True)),
+            default_speed_ratio=float(robot_config.get("default_speed_ratio", 0.05)),
+            max_command_speed_ratio=float(robot_config.get("max_command_speed_ratio", 0.1)),
+            move_timeout_ms=int(robot_config.get("move_timeout_ms", 60_000)),
+            max_joint_delta_deg=float(robot_config.get("max_joint_delta_deg", 5.0)),
+            joint_limits_deg=robot_config.get("joint_limits_deg"),
+            stop_on_shutdown=bool(robot_config.get("stop_on_shutdown", False)),
+        )
+    else:
+        raise ValueError(f"unsupported robot backend: {robot_backend}")
     return create_app(camera=camera, controller=controller), config.get("server", {})
+
+
+def _mock_initial_joints_rad(robot_config: dict[str, Any]) -> list[float]:
+    if "initial_joints_rad" in robot_config:
+        values = [float(value) for value in robot_config["initial_joints_rad"]]
+    elif "initial_joints_deg" in robot_config:
+        values = [math.radians(float(value)) for value in robot_config["initial_joints_deg"]]
+    else:
+        values = [0.0] * 7
+    if len(values) < 7:
+        raise ValueError("mock initial joints must contain at least 7 values")
+    return values[:7]
+
+
+def _build_x5_arm_configs(robot_config: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    arms = robot_config.get("arms", ["left"])
+    arm_configs: dict[str, dict[str, Any]] = {}
+    for arm in arms:
+        arm_name = str(arm)
+        arm_config = dict(robot_config.get(arm_name, {}))
+        for key in ("robot_ip", "home_joints_deg", "initial_joints_deg", "head_joints_deg"):
+            if key not in arm_config and key in robot_config:
+                arm_config[key] = robot_config[key]
+        if "home_joints_deg" not in arm_config and "initial_joints_deg" in arm_config:
+            arm_config["home_joints_deg"] = arm_config["initial_joints_deg"]
+        if "home_joints_deg" in arm_config:
+            arm_config["home_joints_deg"] = _first_seven_values(arm_config["home_joints_deg"])
+        if "head_joints_deg" in arm_config:
+            arm_config["head_joints_deg"] = _first_two_values(arm_config["head_joints_deg"])
+        arm_configs[arm_name] = arm_config
+    return arm_configs
+
+
+def _first_seven_values(values: Any) -> list[float]:
+    converted = [float(value) for value in values]
+    if len(converted) < 7:
+        raise ValueError("expected at least 7 joint values")
+    return converted[:7]
+
+
+def _first_two_values(values: Any) -> list[float]:
+    converted = [float(value) for value in values]
+    if len(converted) < 2:
+        raise ValueError("expected at least 2 head joint values")
+    return converted[:2]
 
 
 app = create_app()
