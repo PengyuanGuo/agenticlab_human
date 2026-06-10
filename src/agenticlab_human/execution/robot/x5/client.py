@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -14,7 +15,9 @@ from PIL import Image
 from agenticlab_human.execution.robot.x5.contracts import (
     GetStateCommand,
     HealthResponse,
+    MoveJPointCommand,
     MoveJointsCommand,
+    MoveLPointCommand,
     RGBDFrame,
     RGBD_MEDIA_TYPE,
     RobotCommand,
@@ -80,6 +83,8 @@ class X5HTTPClient:
             json=request.model_dump(mode="json"),
             **self._request_options(),
         )
+        if response.status_code == 400:
+            return RobotCommandResponse.model_validate(response.json())
         response.raise_for_status()
         return RobotCommandResponse.model_validate(response.json())
 
@@ -99,6 +104,48 @@ class X5HTTPClient:
             MoveJointsCommand(
                 arm=arm,
                 joints_rad=joints_rad,
+                speed_ratio=speed_ratio,
+                wait=wait,
+            ),
+            request_id=request_id,
+        )
+
+    def movej_point(
+        self,
+        arm: str,
+        tcp_pose_xyz_rotvec: list[float],
+        *,
+        speed_ratio: float = 0.05,
+        wait: bool = True,
+        request_id: str | None = None,
+    ) -> RobotCommandResponse:
+        """Move the configured TCP to a world-frame target using joint motion."""
+
+        return self.send_command(
+            MoveJPointCommand(
+                arm=arm,
+                tcp_pose_xyz_rotvec=tcp_pose_xyz_rotvec,
+                speed_ratio=speed_ratio,
+                wait=wait,
+            ),
+            request_id=request_id,
+        )
+
+    def movel_point(
+        self,
+        arm: str,
+        tcp_pose_xyz_rotvec: list[float],
+        *,
+        speed_ratio: float = 0.05,
+        wait: bool = True,
+        request_id: str | None = None,
+    ) -> RobotCommandResponse:
+        """Move the configured TCP to a world-frame target in a straight line."""
+
+        return self.send_command(
+            MoveLPointCommand(
+                arm=arm,
+                tcp_pose_xyz_rotvec=tcp_pose_xyz_rotvec,
                 speed_ratio=speed_ratio,
                 wait=wait,
             ),
@@ -125,6 +172,34 @@ class X5HTTPClient:
         if self.timeout_s is None:
             return {}
         return {"timeout": self.timeout_s}
+
+
+def tcp_pose_xyzw_to_xyz_rotvec(tcp_pose_xyzw: list[float]) -> list[float]:
+    """Convert state [x,y,z,qx,qy,qz,qw] to command [x,y,z,rx,ry,rz]."""
+
+    values = [float(value) for value in tcp_pose_xyzw]
+    if len(values) != 7:
+        raise ValueError("tcp_pose_xyzw must contain exactly 7 values")
+    if not all(math.isfinite(value) for value in values):
+        raise ValueError("tcp_pose_xyzw values must be finite")
+
+    qx, qy, qz, qw = values[3:]
+    norm = math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw)
+    if norm < 1e-12:
+        raise ValueError("orientation quaternion must be non-zero")
+    qx, qy, qz, qw = (value / norm for value in (qx, qy, qz, qw))
+    if qw < 0.0:
+        qx, qy, qz, qw = -qx, -qy, -qz, -qw
+
+    qw = min(1.0, max(-1.0, qw))
+    angle = 2.0 * math.acos(qw)
+    sin_half_angle = math.sqrt(max(0.0, 1.0 - qw * qw))
+    if sin_half_angle < 1e-9:
+        rotvec = [0.0, 0.0, 0.0]
+    else:
+        scale = angle / sin_half_angle
+        rotvec = [qx * scale, qy * scale, qz * scale]
+    return values[:3] + rotvec
 
 
 def save_rgbd_frame(frame: RGBDFrame, save_dir: str | Path) -> dict[str, Path]:

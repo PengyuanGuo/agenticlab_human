@@ -40,7 +40,8 @@ Phase 1 已完成：
 - `contracts.py`
   - FastAPI/Pydantic request-response models。
   - RGB-D NPZ 编解码。
-  - `get_state`、`move_joints`、`stop` command contracts。
+  - `get_state`、`move_joints`、`movej_point`、`movel_point`、`stop`
+    command contracts。
 - `camera.py`
   - `RGBDCamera` protocol。
   - deterministic `MockRGBDCamera`。
@@ -102,19 +103,51 @@ Phase 3 基础控制代码已实现：
 - `server.py` 支持 `robot.backend: "x5"`。
 - `x5_config.yaml` 加载 robot IP、home joints、速度限制、关节限制和单次最大关节变化量。
 - `RealX5Controller` lazy import `xapi.api`，因此 Client PC 不需要安装 X5 SDK。
-- `get_state` 读取 `x5.get_cjoint()` 和 `x5.get_cpoint()`，对外返回弧度、米和 quaternion `xyzw`。
+- `get_state` 读取 `x5.get_cjoint()` 和 `x5.get_wpoint()`，对外返回弧度、米和 quaternion `xyzw`。
+- 配置 `tool_frame.tf_no` 后，Server 启动时调用 `x5.set_tfno(tf_no)` 并通过
+  `x5.get_tfno()` 校验 active TF。
+- 配置 `tool_frame.position_m`/`rpy_deg` 后，Server 会先调用
+  `x5.set_tf()` 覆盖该 TF，再使用 `x5.get_tf()` 读回校验。公共配置单位为
+  米和角度，SDK 边界转换为毫米和角度。
+- `ArmState` 返回 `tool_frame_no` 和 `tool_frame_pose_xyzw`，用于确认当前
+  world TCP 使用的工具坐标系及其 offset。
 - `stop` 调用 `stop -> wait_cmd_send_done -> abort -> wait_cmd_send_done -> wait_move_done`。
 - `move_joints` 使用 `x5.Joint` 和 `x5.MovPointAdd(vel, acc)`，并在服务端强制校验速度、joint limits 和最大 delta。
 - Client 端 `move_joints` 仍只发送 7 个 arm joints；Server 端下发 xapi 时从
   `head_joints_deg` 补齐 head joint 1/2，避免 arm-only move 把 head 轴归零。
+- `movej_point` 和 `movel_point` 接收 world-frame TCP
+  `[x,y,z,rx,ry,rz]`，单位为米和 rotation-vector radians。
+- Server 将 rotvec 转为 X5 Euler XYZ degrees，并构造
+  `x5.Point((x_mm,y_mm,z_mm,a,b,c,e1,e2,e3), uf=0, tf=active_tf, cfg=current_cfg)`。
+- Point 构造从当前 `get_cjoint()` 保留 `e1/e2/e3`，其中七轴 X5 的
+  `e1` 是 R1/J7，当前设备的 `e2/e3` 是两个 head joints；夹爪不通过这些字段控制。
+- `x5_remote_backend.py` 已实现最小 `RemoteX5ActionBackend`：
+  - AnyGrasp grasp frame 到 X5 TCP frame 的固定变换：
+    `T_world_tcp = T_world_camera @ T_camera_grasp @ T_grasp_tcp`。
+  - `home joints -> movej_point(approach) -> movel_point(grasp)`。
+  - home joints 按 `home_max_step_deg` 分段，避免超过 Server 单次 joint delta。
+  - `execute_until: home|approach|grasp` 支持逐级真机验证。
+  - 任一步失败后尝试发送 `stop`。
+- `RemoteX5ActionBackend` place 已实现：
+  - `movel(grasp retreat) -> home joints -> movej(pre-place) -> movel(place)`。
+  - grasp retreat 复用前一次 pick 的 approach pose。
+  - 回 home 后读取真实 TCP rotvec，并覆盖 target pose 自带的姿态。
+  - pre-place 只在 world X 上使用带符号 offset，不修改 Y/Z。
+  - `place_execute_until: retreat|home|preplace|place` 支持逐级验证。
 
 暂未实现或验证：
 
 - `scene_provider.py` 的 Remote RGB-D `SceneProvider`。
-- `remote_backend.py` 的 AgenticLab `ActionBackend`。
-- Phase 3 真实机械臂上的 `get_state`、`stop` 和小幅 `move_joints` 实测。
-- 夹爪 driver。
-- TCP/gripper/home commands。
+- `stop` 真机实测。
+- gripper command。
+- X5 Cartesian IK 可达性预检查。
+
+已完成真机验证：
+
+- `get_state`、低速 `move_joints`。
+- `movej(Point)` 当前位姿零移动和 `5 mm` 小移动。
+- `movel(Point)` `5 mm` 小移动。
+- `home -> approach -> grasp`，位置和方向符合预期。
 
 ## HTTP API
 
@@ -177,6 +210,36 @@ NPZ 避免将 RGB/depth 展开成体积很大的 JSON list。
 }
 ```
 
+关节轨迹移动到 world-frame TCP Point：
+
+```json
+{
+  "request_id": "movej-point-left-001",
+  "command": {
+    "type": "movej_point",
+    "arm": "left",
+    "tcp_pose_xyz_rotvec": [0.30, -0.45, 0.30, 0.0, 0.0, 1.57],
+    "speed_ratio": 0.05,
+    "wait": true
+  }
+}
+```
+
+直线移动到 world-frame TCP Point：
+
+```json
+{
+  "request_id": "movel-point-left-001",
+  "command": {
+    "type": "movel_point",
+    "arm": "left",
+    "tcp_pose_xyz_rotvec": [0.30, -0.45, 0.295, 0.0, 0.0, 1.57],
+    "speed_ratio": 0.03,
+    "wait": true
+  }
+}
+```
+
 停止：
 
 ```json
@@ -199,8 +262,9 @@ NPZ 避免将 RGB/depth 展开成体积很大的 JSON list。
 所有公共协议使用：
 
 - joint：弧度。
-- Cartesian position：米，后续加入。
-- orientation：quaternion `xyzw`，后续加入。
+- Cartesian command position：米。
+- Cartesian command orientation：rotation vector radians。
+- Cartesian state orientation：quaternion `xyzw`。
 - depth：毫米。
 
 Note: X5 所需的毫米、角度和 SDK 对象只能在真实 controller 内转换。
@@ -321,7 +385,7 @@ X5HTTPClient.get_state("left")
   -> POST /v1/robot/command
   -> robot executor
   -> RealX5Controller.get_state()
-  -> x5.get_cjoint(), x5.get_cpoint(), x5.get_system_state()
+  -> x5.get_cjoint(), x5.get_wpoint(), x5.get_system_state()
   -> degrees/mm -> radians/meters/quaternion
   -> RobotCommandResponse
 
@@ -343,6 +407,20 @@ X5HTTPClient.move_joints("left", joints_rad=current + small_delta)
   -> x5.movj(handle, target, x5.MovPointAdd(vel, acc))
   -> optional x5.wait_move_done()
   -> RobotCommandResponse
+```
+
+Cartesian Point 路径：
+
+```text
+X5HTTPClient.movej_point()/movel_point()
+  -> world TCP [x,y,z,rx,ry,rz] in meters/radians
+  -> server-side speed / translation / rotation checks
+  -> get_wpoint() for current cfg and current world TCP
+  -> get_cjoint() for current R1/e2/e3
+  -> rotvec -> Euler XYZ degrees
+  -> x5.Point(..., uf=0, tf=active TF, cfg=current cfg)
+  -> x5.movj(Point) or x5.movl(Point)
+  -> optional x5.wait_move_done()
 ```
 
 ## 后续计划
@@ -376,11 +454,18 @@ python src/agenticlab_human/execution/robot/x5/test_x5_server.py
 
 - `robot.backend: "x5"`。
 - `robot.left.robot_ip` 为 X5 控制器 IP，当前为 `192.168.1.7`。
+- `robot.left.tool_frame.tf_no` 为 active tool frame，当前设为 `1`。
+- `tool_frame.position_m: [0, 0, 0.16]` 表示工具原点沿法兰 Z 轴偏移
+  `160 mm`；`rpy_deg` 当前为零旋转。
 - `home_joints_deg` 只作为已知安全参考位，不作为首次自动运动目标。
 - `head_joints_deg` 为 arm-only `move_joints` 下发时保留的 head joint 1/2，
   当前默认 `[0, 28]`。
 - `max_command_speed_ratio` 当前为 `0.10`。
 - `max_joint_delta_deg` 当前为 `5.0`，防止第一阶段误发大幅关节目标。
+- `max_movej_point_translation_m` 和 `max_movej_point_rotation_deg` 限制单次
+  `movej(Point)` 相对当前 TCP 的变化。
+- `max_movel_point_translation_m` 和 `max_movel_point_rotation_deg` 限制单次
+  直线段；当前分别为 `0.10 m` 和 `30 deg`。
 
 3. 在 Server PC 启动真实 Orbbec + real X5 server：
 
@@ -404,7 +489,11 @@ with X5HTTPClient("http://192.168.1.15:8000") as client:
     print(client.health())
     result = client.get_state("left")
     print(result.success)
-    print(result.state_after.arms["left"].joints_rad)
+    state = result.state_after.arms["left"]
+    print("joints_rad:", state.joints_rad)
+    print("world_tcp_xyzw:", state.tcp_pose_xyzw)
+    print("tool_frame_no:", state.tool_frame_no)
+    print("tool_frame_pose_xyzw:", state.tool_frame_pose_xyzw)
 PY
 ```
 
@@ -447,21 +536,253 @@ PY
 joint，再只对一个关节增加 `1 deg` 左右。如果服务端返回
 `max delta ... exceeds configured max_joint_delta_deg`，说明安全校验生效。
 
+7. 真机 `movej(Point)` 当前位姿零移动。Client state 返回 quaternion，
+command 使用 rotvec，因此在 Client PC 转换：
+
+```bash
+python - <<'PY'
+from agenticlab_human.execution.robot.x5.client import (
+    X5HTTPClient,
+    tcp_pose_xyzw_to_xyz_rotvec,
+)
+
+with X5HTTPClient("http://192.168.1.15:8000") as client:
+    state = client.get_state("left").state_after.arms["left"]
+    pose6d = tcp_pose_xyzw_to_xyz_rotvec(state.tcp_pose_xyzw)
+    result = client.movej_point(
+        "left",
+        pose6d,
+        speed_ratio=0.03,
+        wait=True,
+        request_id="phase3-movej-point-zero",
+    )
+    print(result.success, result.error)
+    print(result.state_after.arms["left"].tcp_pose_xyzw)
+PY
+```
+
+预期机械臂、R1 和 head joints 均不发生可见移动。这一步用于确认 `Point` 的
+`uf=0/tf=1/cfg/e1/e2/e3` 构造正确。
+
+8. 零移动通过后，只沿已确认安全的 world axis 增加 `5 mm`，执行
+`movej(Point)`：
+
+```bash
+python - <<'PY'
+from agenticlab_human.execution.robot.x5.client import (
+    X5HTTPClient,
+    tcp_pose_xyzw_to_xyz_rotvec,
+)
+
+with X5HTTPClient("http://192.168.1.15:8000") as client:
+    state = client.get_state("left").state_after.arms["left"]
+    pose6d = tcp_pose_xyzw_to_xyz_rotvec(state.tcp_pose_xyzw)
+    pose6d[2] += 0.005
+    result = client.movej_point(
+        "left", pose6d, speed_ratio=0.03, wait=True,
+        request_id="phase3-movej-point-z-plus-5mm",
+    )
+    print(result.success, result.error)
+PY
+```
+
+9. 回到已确认起点后，以同样的 `5 mm` 目标测试 `movel(Point)`：
+
+```bash
+python - <<'PY'
+from agenticlab_human.execution.robot.x5.client import (
+    X5HTTPClient,
+    tcp_pose_xyzw_to_xyz_rotvec,
+)
+
+with X5HTTPClient("http://192.168.1.15:8000") as client:
+    state = client.get_state("left").state_after.arms["left"]
+    pose6d = tcp_pose_xyzw_to_xyz_rotvec(state.tcp_pose_xyzw)
+    pose6d[2] += 0.005
+    result = client.movel_point(
+        "left", pose6d, speed_ratio=0.02, wait=True,
+        request_id="phase3-movel-point-z-plus-5mm",
+    )
+    print(result.success, result.error)
+PY
+```
+
+注意：示例使用 world Z 只是为了展示格式。真机测试必须根据现场机械臂姿态、
+桌面和障碍物选择明确安全的方向，并保持急停可用。
+
+AnyGrasp 到 X5 TCP 的姿态规划约定：
+
+```text
+T_grasp_tcp = T_grasp_ee
+
+R_grasp_tcp =
+[[ 0, 0, 1],
+ [ 0, 1, 0],
+ [-1, 0, 0]]
+
+T_world_tcp = T_world_camera @ T_camera_grasp @ T_grasp_tcp
+```
+
+approach pose 沿 AnyGrasp grasp frame 的 `-X` 方向退开
+`approach_distance_m`，然后使用：
+
+```text
+movej_point(approach)
+movel_point(grasp)
+close_gripper()
+movel_point(approach)
+```
+
 下一步：
 
-1. 完成真实机械臂 `get_state` 实测。
-2. 完成真实机械臂 `stop` 实测。
-3. 完成低速 `move_joints` 小幅实测。
-4. 接入夹爪后增加 `set_gripper`。
-5. 确认状态读取和运动指令全部在 robot executor 线程执行。
+1. 按零移动、`movej(Point)`、`movel(Point)` 顺序完成真机验证。
+2. 增加 X5 IK 可达性预检查。
+3. 接入夹爪后增加 `set_gripper`。
+
+### Phase 3.5：Remote pick trajectory 验证
+
+`x5_config.yaml` 的 Client 侧配置：
+
+```yaml
+action_backend:
+  server_url: "http://192.168.1.15:8000"
+  arm: "left"
+  camera_name: "Gemini335"
+  approach_distance_m: 0.05
+  home_before_pick: true
+  home_speed_ratio: 0.05
+  home_max_step_deg: 4.0
+  approach_speed_ratio: 0.03
+  grasp_speed_ratio: 0.02
+  request_timeout_s: 90.0
+  execute_until: "grasp"
+```
+
+使用当前 AnyGrasp pose 做纯计算，不连接 Server：
+
+```bash
+python -m agenticlab_human.execution.robot.x5.x5_remote_backend \
+  --translation -0.22220398 0.35045108 0.893 \
+  --rotation \
+    -0.10528455 -0.9855515 0.13267802 \
+     0.61262065 -0.16937618 -0.77201533 \
+     0.78333336 0.0 0.6216019
+```
+
+输出必须包含：
+
+```text
+approach_pose_xyz_rotvec:
+[0.60914231, -0.64021270, -0.01633978,
+ 1.31268428, 0.84693738, 1.12498065]
+
+grasp_pose_xyz_rotvec:
+[0.65660905, -0.65487452, -0.01068828,
+ 1.31268428, 0.84693738, 1.12498065]
+```
+
+真机验证必须按以下三次独立运行逐级进行。每次都会先分段回 home。
+
+仅验证 home：
+
+```bash
+python -m agenticlab_human.execution.robot.x5.x5_remote_backend \
+  --execute --execute-until home \
+  --translation -0.22220398 0.35045108 0.893 \
+  --rotation \
+    -0.10528455 -0.9855515 0.13267802 \
+     0.61262065 -0.16937618 -0.77201533 \
+     0.78333336 0.0 0.6216019
+```
+
+home 验证后，仅执行到 approach：
+
+```bash
+python -m agenticlab_human.execution.robot.x5.x5_remote_backend \
+  --execute --execute-until approach \
+  --translation -0.22220398 0.35045108 0.893 \
+  --rotation \
+    -0.10528455 -0.9855515 0.13267802 \
+     0.61262065 -0.16937618 -0.77201533 \
+     0.78333336 0.0 0.6216019
+```
+
+确认 approach 位置和夹爪朝向后，执行到 grasp：
+
+```bash
+python -m agenticlab_human.execution.robot.x5.x5_remote_backend \
+  --execute --execute-until grasp \
+  --translation -0.22220398 0.35045108 0.893 \
+  --rotation \
+    -0.10528455 -0.9855515 0.13267802 \
+     0.61262065 -0.16937618 -0.77201533 \
+     0.78333336 0.0 0.6216019
+```
+
+当前 `pick` 只完成运动到 grasp pose，不控制夹爪。retreat 在紧接着的 place
+动作开头执行。接入 `set_gripper` 后完整动作是：
+
+```text
+home -> approach -> grasp -> close gripper
+grasp retreat -> home -> pre-place -> place -> open gripper
+```
+
+### Phase 3.6：Remote place trajectory
+
+Client 配置：
+
+```yaml
+action_backend:
+  retreat_speed_ratio: 0.02
+  place_approach_speed_ratio: 0.03
+  place_speed_ratio: 0.02
+  place_approach_offset_x_m: -0.05
+  home_tcp_rotvec: [1.2172784, 1.2123690, 1.2159012]
+  place_execute_until: "place"
+```
+
+`place_approach_offset_x_m` 是带符号的 world-X offset：
+
+```text
+pre_place.x = place.x + place_approach_offset_x_m
+pre_place.y = place.y
+pre_place.z = place.z
+```
+
+`home_tcp_rotvec` 只供 dry-run 使用。真机执行时，在分段回 home 后读取
+`get_state()` 的 TCP quaternion，转换成 rotvec，并用于 pre-place/place：
+
+```text
+place_pose = [target_x, target_y, target_z, home_rx, home_ry, home_rz]
+pre_place_pose = [
+  target_x + x_offset,
+  target_y,
+  target_z,
+  home_rx,
+  home_ry,
+  home_rz,
+]
+```
+
+`target_pose` 必须是 world-frame pose vector（至少包含 XYZ）或 `4x4`
+world transform。target 自带的 orientation 会被忽略。
+
+真机必须按下面顺序逐级修改 `place_execute_until`：
+
+1. `retreat`：从 grasp 沿 pick approach 原路执行 `movel`。
+2. `home`：retreat 后分段回 home。
+3. `preplace`：使用 home rotvec，`movej(Point)` 到 world-X offset 点。
+4. `place`：从 pre-place `movel(Point)` 到最终 target XYZ。
+
+当前 place 仅执行机械臂轨迹，不包含松开夹爪。
 
 ### Phase 4：AgenticLab 接入
 
 1. `scene_provider.py` 实现 `RemoteRGBDSceneProvider.capture_rgbd()`。
 2. 将 remote scene provider 交给 `ExecutionContext`。
 3. Client 本地运行 YOLO 和 grasp backend。
-4. `remote_backend.py` 实现 AgenticLab `ActionBackend`。
-5. 将 grasp pose 转换为 approach、grasp、close、retreat command sequence。
+4. 将 `RemoteX5ActionBackend` 接入正式 action execution 配置。
+5. 接入 gripper HTTP command，补齐 pick close 和 place open。
 
 ### Phase 5：安全与可靠性
 

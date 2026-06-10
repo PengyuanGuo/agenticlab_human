@@ -2,6 +2,29 @@ server:
   host: "0.0.0.0"
   port: 8000
 
+# Client-side semantic execution settings. These are not consumed by the
+# hardware server.
+action_backend:
+  server_url: "http://192.168.1.15:8000"
+  arm: "left"
+  camera_name: "Gemini335"
+  approach_distance_m: 0.05
+  home_before_pick: true
+  home_speed_ratio: 0.05
+  home_max_step_deg: 4.0
+  approach_speed_ratio: 0.03
+  grasp_speed_ratio: 0.02
+  retreat_speed_ratio: 0.02
+  place_approach_speed_ratio: 0.03
+  place_speed_ratio: 0.02
+  # Signed world-X offset: pre-place.x = place.x + offset.
+  place_approach_offset_x_m: -0.05
+  # Dry-run fallback only. Real execution reads the TCP rotvec after reaching home.
+  home_tcp_rotvec: [1.2172784, 1.2123690, 1.2159012]
+  request_timeout_s: 90.0
+  execute_until: "grasp"
+  place_execute_until: "place"
+
 # Real Orbbec camera + real X5 controller for Server PC deployment.
 camera:
   backend: "orbbec"
@@ -23,6 +46,10 @@ robot:
   default_speed_ratio: 0.05
   max_command_speed_ratio: 0.10
   max_joint_delta_deg: 5.0
+  max_movej_point_translation_m: 0.50
+  max_movej_point_rotation_deg: 180.0
+  max_movel_point_translation_m: 0.10
+  max_movel_point_rotation_deg: 30.0
   move_timeout_ms: 60000
   joint_limits_deg:
     - [-170.0, 170.0]
@@ -34,8 +61,11 @@ robot:
     - [-170.0, 170.0]
   left:
     robot_ip: "192.168.1.7"
-    # home_joints_deg: [-24, 10, -53, 102, 101, 80, -18] # gripper facing down
-    # head_joints_deg: [0, 28]
-    home_joints_deg: [-49, 55, -18, 90, 0, 100, -18] # calibration home pose
+    tool_frame:
+      tf_no: 1
+      position_m: [0.0, 0.0, 0.16]
+      rpy_deg: [0.0, 0.0, 0.0]
+    home_joints_deg: [-24, 10, -53, 102, 101, 80, -18] # gripper facing down
     head_joints_deg: [0, 28]
-
+    # home_joints_deg: [-49, 55, -18, 90, 0, 100, -18] # calibration home pose
+    # head_joints_deg: [0, 28]

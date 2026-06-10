@@ -214,8 +214,23 @@ def _build_backend(args: argparse.Namespace) -> ActionBackend:
         return FlexivActionBackend(
             robot_config_path=args.robot_config,
             camera_config_path=args.camera_config,
+            camera_name=args.camera_name or "FemtoBolt",
+            execute=args.execute,
+        )
+    if args.backend == "x5":
+        from agenticlab_human.execution.robot.x5.x5_remote_backend import (
+            RemoteX5ActionBackend,
+        )
+
+        return RemoteX5ActionBackend(
+            robot_config_path=args.robot_config,
+            camera_config_path=args.camera_config,
+            server_url=args.x5_server_url,
+            arm=args.x5_arm,
             camera_name=args.camera_name,
             execute=args.execute,
+            execute_until=args.x5_execute_until,
+            place_execute_until=args.x5_place_execute_until,
         )
     raise ValueError(f"Unsupported backend: {args.backend}")
 
@@ -276,7 +291,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--backend",
         default="dry-run",
-        choices=["dry-run", "flexiv"],
+        choices=["dry-run", "flexiv", "x5"],
         help="Execution backend. Defaults to dry-run.",
     )
     parser.add_argument(
@@ -296,8 +311,26 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--camera-name",
-        default="FemtoBolt",
         help="Camera name in --camera-config used for hand-eye conversion.",
+    )
+    parser.add_argument(
+        "--x5-server-url",
+        help="Override action_backend.server_url for the remote X5 server.",
+    )
+    parser.add_argument(
+        "--x5-arm",
+        choices=("left", "right"),
+        help="Override action_backend.arm.",
+    )
+    parser.add_argument(
+        "--x5-execute-until",
+        choices=("home", "approach", "grasp"),
+        help="Stop X5 pick validation after the selected stage.",
+    )
+    parser.add_argument(
+        "--x5-place-execute-until",
+        choices=("retreat", "home", "preplace", "place"),
+        help="Stop X5 place validation after the selected stage.",
     )
     parser.add_argument(
         "--test-grasp-camera-pose",

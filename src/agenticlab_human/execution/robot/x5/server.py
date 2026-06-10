@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 import math
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -38,6 +39,7 @@ from agenticlab_human.execution.robot.x5.x5_controller import (
 DEFAULT_CONFIG_PATH = str(
     Path(__file__).resolve().parents[5] / "configs" / "robot" / "x5_config.yaml"
 )
+logger = logging.getLogger("uvicorn.error")
 
 
 class HardwareRuntime:
@@ -148,6 +150,12 @@ def create_app(
         started_ns = time.perf_counter_ns()
         state_before = await runtime.robot_state()
         accepted_command = request.command.model_dump(mode="json")
+        logger.info(
+            "X5 command received: class=%s module=%s payload=%s",
+            type(request.command).__name__,
+            type(request.command).__module__,
+            accepted_command,
+        )
         try:
             await runtime.execute(request.command)
             state_after = await runtime.robot_state()
@@ -220,6 +228,18 @@ def create_app_from_config(config_path: str = DEFAULT_CONFIG_PATH) -> tuple[Fast
             max_command_speed_ratio=float(robot_config.get("max_command_speed_ratio", 0.1)),
             move_timeout_ms=int(robot_config.get("move_timeout_ms", 60_000)),
             max_joint_delta_deg=float(robot_config.get("max_joint_delta_deg", 5.0)),
+            max_movej_point_translation_m=float(
+                robot_config.get("max_movej_point_translation_m", 0.5)
+            ),
+            max_movej_point_rotation_deg=float(
+                robot_config.get("max_movej_point_rotation_deg", 180.0)
+            ),
+            max_movel_point_translation_m=float(
+                robot_config.get("max_movel_point_translation_m", 0.1)
+            ),
+            max_movel_point_rotation_deg=float(
+                robot_config.get("max_movel_point_rotation_deg", 30.0)
+            ),
             joint_limits_deg=robot_config.get("joint_limits_deg"),
             stop_on_shutdown=bool(robot_config.get("stop_on_shutdown", False)),
         )
@@ -246,7 +266,14 @@ def _build_x5_arm_configs(robot_config: dict[str, Any]) -> dict[str, dict[str, A
     for arm in arms:
         arm_name = str(arm)
         arm_config = dict(robot_config.get(arm_name, {}))
-        for key in ("robot_ip", "home_joints_deg", "initial_joints_deg", "head_joints_deg"):
+        for key in (
+            "robot_ip",
+            "home_joints_deg",
+            "initial_joints_deg",
+            "head_joints_deg",
+            "tf_no",
+            "tool_frame",
+        ):
             if key not in arm_config and key in robot_config:
                 arm_config[key] = robot_config[key]
         if "home_joints_deg" not in arm_config and "initial_joints_deg" in arm_config:

@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Annotated, Any, Dict, Literal, Optional, Union
 
 import numpy as np
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 API_VERSION = "v1"
@@ -87,6 +87,12 @@ class ArmState(BaseModel):
     moving: bool
     joints_rad: list[float] = Field(min_length=7, max_length=7)
     tcp_pose_xyzw: list[float] = Field(min_length=7, max_length=7)
+    tool_frame_no: Optional[int] = Field(default=None, ge=0, le=16)
+    tool_frame_pose_xyzw: Optional[list[float]] = Field(
+        default=None,
+        min_length=7,
+        max_length=7,
+    )
     gripper_position: Optional[float] = None
 
 
@@ -108,13 +114,44 @@ class MoveJointsCommand(BaseModel):
     wait: bool = True
 
 
+class CartesianPointCommand(BaseModel):
+    """World-frame TCP target in meters and rotation-vector radians."""
+
+    arm: ArmName
+    tcp_pose_xyz_rotvec: list[float] = Field(min_length=6, max_length=6)
+    speed_ratio: float = Field(default=0.05, gt=0.0, le=1.0)
+    wait: bool = True
+
+    @field_validator("tcp_pose_xyz_rotvec")
+    @classmethod
+    def validate_finite_pose(cls, values: list[float]) -> list[float]:
+        converted = [float(value) for value in values]
+        if not all(np.isfinite(value) for value in converted):
+            raise ValueError("tcp_pose_xyz_rotvec values must be finite")
+        return converted
+
+
+class MoveJPointCommand(CartesianPointCommand):
+    type: Literal["movej_point"] = "movej_point"
+
+
+class MoveLPointCommand(CartesianPointCommand):
+    type: Literal["movel_point"] = "movel_point"
+
+
 class StopCommand(BaseModel):
     type: Literal["stop"] = "stop"
     arm: ArmTarget = "all"
 
 
 RobotCommand = Annotated[
-    Union[GetStateCommand, MoveJointsCommand, StopCommand],
+    Union[
+        GetStateCommand,
+        MoveJointsCommand,
+        MoveJPointCommand,
+        MoveLPointCommand,
+        StopCommand,
+    ],
     Field(discriminator="type"),
 ]
 

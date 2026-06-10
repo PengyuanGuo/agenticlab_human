@@ -1,8 +1,13 @@
 import numpy as np
+import pytest
 from fastapi.testclient import TestClient
 
 from agenticlab_human.execution.robot.x5.camera import MockRGBDCamera, OrbbecRGBDCamera
-from agenticlab_human.execution.robot.x5.client import X5HTTPClient, save_rgbd_frame
+from agenticlab_human.execution.robot.x5.client import (
+    X5HTTPClient,
+    save_rgbd_frame,
+    tcp_pose_xyzw_to_xyz_rotvec,
+)
 from agenticlab_human.execution.robot.x5.contracts import CameraIntrinsics
 from agenticlab_human.execution.robot.x5.server import create_app
 from agenticlab_human.execution.robot.x5.x5_controller import MockX5Controller
@@ -66,6 +71,36 @@ def test_move_joints_returns_accepted_command_and_updated_state():
     assert result.state_after.arms["right"].joints_rad == [0.0] * 7
 
 
+def test_cartesian_point_commands_update_mock_tcp_pose():
+    movej_target = [0.2, -0.1, 0.4, 0.0, 0.0, np.pi / 2.0]
+    movel_target = [0.2, -0.1, 0.35, 0.0, 0.0, np.pi / 2.0]
+    with TestClient(_build_app()) as transport:
+        client = X5HTTPClient("http://testserver", timeout_s=None, session=transport)
+
+        movej_result = client.movej_point(
+            "left",
+            movej_target,
+            speed_ratio=0.05,
+            request_id="test-movej-point",
+        )
+        movel_result = client.movel_point(
+            "left",
+            movel_target,
+            speed_ratio=0.03,
+            request_id="test-movel-point",
+        )
+
+    assert movej_result.success is True
+    assert movej_result.accepted_command["type"] == "movej_point"
+    assert movej_result.state_after.arms["left"].tcp_pose_xyzw[:3] == movej_target[:3]
+    assert movej_result.state_after.arms["left"].tcp_pose_xyzw[5:] == pytest.approx(
+        [np.sqrt(0.5), np.sqrt(0.5)]
+    )
+    assert movel_result.success is True
+    assert movel_result.accepted_command["type"] == "movel_point"
+    assert movel_result.state_after.arms["left"].tcp_pose_xyzw[:3] == movel_target[:3]
+
+
 def test_invalid_joint_count_is_rejected_by_contract():
     with TestClient(_build_app()) as transport:
         response = transport.post(
@@ -81,6 +116,55 @@ def test_invalid_joint_count_is_rejected_by_contract():
         )
 
     assert response.status_code == 422
+
+
+def test_invalid_cartesian_pose_is_rejected_by_contract():
+    with TestClient(_build_app()) as transport:
+        response = transport.post(
+            "/v1/robot/command",
+            json={
+                "request_id": "bad-point",
+                "command": {
+                    "type": "movel_point",
+                    "arm": "left",
+                    "tcp_pose_xyz_rotvec": [0.1, 0.2, 0.3],
+                },
+            },
+        )
+
+    assert response.status_code == 422
+
+
+def test_client_preserves_robot_command_error_from_http_400():
+    class RejectingController(MockX5Controller):
+        def execute(self, command):
+            if command.type == "movej_point":
+                raise ValueError("X5 rejected Cartesian target")
+            return super().execute(command)
+
+    app = create_app(
+        camera=MockRGBDCamera(),
+        controller=RejectingController(),
+    )
+    with TestClient(app) as transport:
+        client = X5HTTPClient("http://testserver", timeout_s=None, session=transport)
+
+        result = client.movej_point(
+            "left",
+            [0.2, -0.1, 0.4, 0.0, 0.0, 0.0],
+        )
+
+    assert result.success is False
+    assert result.error == "X5 rejected Cartesian target"
+
+
+def test_tcp_state_quaternion_converts_to_cartesian_command_rotvec():
+    pose6d = tcp_pose_xyzw_to_xyz_rotvec(
+        [0.1, 0.2, 0.3, 0.0, 0.0, np.sqrt(0.5), np.sqrt(0.5)]
+    )
+
+    assert pose6d[:3] == [0.1, 0.2, 0.3]
+    assert pose6d[3:] == pytest.approx([0.0, 0.0, np.pi / 2.0])
 
 
 def test_orbbec_adapter_converts_camera_capture_to_wire_frame():

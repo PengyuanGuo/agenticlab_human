@@ -235,3 +235,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+# python src/agenticlab_human/perception/detection/yolo_world_detector.py \
+#   --image data/data_for_test/task_parser/04_stack1_color.png \
+#   --classes number_block_1 number_block_2 number_block_3 \
+#   --model-path train_yolo/runs/train/agenticlab_objects_yolo26s/weights/best.pt \
+#   --model-type regular \
+#   --conf 0.25 \
+#   --imgsz 960
