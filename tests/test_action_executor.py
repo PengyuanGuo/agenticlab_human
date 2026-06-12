@@ -10,7 +10,9 @@ from agenticlab_human.perception.backend.perception_backend import BBox
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-HISTORICAL_SESSION = REPO_ROOT / "output/task_parser/20260527_112644"
+ACTION_SEQUENCE_PATH = (
+    REPO_ROOT / "output/task_parser/20260601_162529/action_sequence.json"
+)
 
 
 class FakeSceneProvider:
@@ -60,8 +62,8 @@ def test_execution_context_prepares_bbox_and_grasp_cache():
     assert context.get_best_grasp("green-cube-1").pose == "green-grasp"
 
 
-def test_action_executor_dry_run_executes_historical_sequence():
-    action_sequence = ActionSequence.load(str(HISTORICAL_SESSION))
+def test_action_executor_dry_run_executes_action_sequence_json():
+    action_sequence = ActionSequence.load(str(ACTION_SEQUENCE_PATH))
     executor = ActionExecutor(backend=DryRunActionBackend())
 
     prepare_report = executor.prepare(action_sequence)
@@ -69,8 +71,8 @@ def test_action_executor_dry_run_executes_historical_sequence():
 
     assert prepare_report.prepared is False
     assert execution_report.success is True
-    assert execution_report.total_actions == 12
-    assert len(execution_report.results) == 12
+    assert execution_report.total_actions == 2
+    assert len(execution_report.results) == 2
     assert execution_report.results[0].metadata["grasp_count"] == 0
     assert all(
         result.action_name in {"pick", "place"}

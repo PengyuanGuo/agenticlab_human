@@ -1,3 +1,25 @@
+# Code Inventory
+
+## Core
+- core/action_sequence.py: Planner → Executor contract.
+- execution/action_backend.py: Robot backend interface.
+- planning/task_parser.py: Converts task + scene into PDDL/action sequence.
+
+## Runtime Backends
+- execution/x5_backend.py: X5 robot execution.
+- execution/flexiv_backend.py: Flexiv execution.
+
+## Perception
+- perception/yolo_detector.py: Object bbox detection.
+- grasp/graspnet_client.py: HTTP client to AnyGrasp/GraspNet service.
+
+## Unclear / Candidate for deletion
+- xxx.py: Seems duplicated with yyy.py.
+- old_demo_xxx.py: One-off test.
+
+
+#  The rest of the content is borrowed from Tiptop/Claude.md, not processed yet.
+
 ## Coding Style and Principles
 
 ### Function-based Design

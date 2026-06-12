@@ -315,7 +315,7 @@ class TaskParser:
           - action_sequence.json    when save_action_sequence=True (default)
 
         The Executor can load the plan later with no in-memory coupling:
-            ActionSequence.load("output/task_parser/<ts>/")
+            ActionSequence.load("output/task_parser/<ts>/action_sequence.json")
 
         Returns the TaskPlan; call plan.to_action_sequence() for the runtime
         contract object, or plan.to_action_sequence_dict() for the plain dict.
@@ -341,8 +341,7 @@ class TaskParser:
         txt_path = os.path.join(self.session_output_dir, "action_sequence.txt")
         task_plan.save_to_file(txt_path)
 
-        # action_sequence.json – optional executor-friendly artifact;
-        # can be regenerated at any time via ActionSequence.load(session_dir)
+        # action_sequence.json - executor entry point.
         if save_action_sequence:
             action_seq_path = os.path.join(self.session_output_dir, "action_sequence.json")
             with open(action_seq_path, 'w') as f:

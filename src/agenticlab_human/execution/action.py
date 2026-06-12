@@ -19,7 +19,6 @@ from agenticlab_human.execution.action_backend import (
     ExecutionReport,
 )
 from agenticlab_human.execution.execution_context import ExecutionContext, PrepareReport
-from agenticlab_human.perception.backend.grasp_backend import GraspCandidate
 
 
 class ActionExecutor:
@@ -192,53 +191,13 @@ def _build_backend(args: argparse.Namespace) -> ActionBackend:
     raise ValueError(f"Unsupported backend: {args.backend}")
 
 
-def _inject_test_grasp_camera_pose(context: ExecutionContext, action_sequence: ActionSequence) -> None:
-    pick_objects = [
-        action.args["object"]
-        for action in action_sequence.actions
-        if action.name == "pick" and action.args.get("object")
-    ]
-    if not pick_objects:
-        raise ValueError("Cannot inject test grasp: ActionSequence has no pick action.")
-
-    T_cam_grasp = [
-        [-0.15578863, 0.90573424, 0.39417678, 0.04381273],
-        [-0.33291125, -0.423846, 0.84233284, -0.07053141],
-        [0.93, 0.0, 0.3675595, 0.536],
-        [0.0, 0.0, 0.0, 1.0],
-    ]
-    object_name = pick_objects[0]
-    context.grasps[object_name] = [
-        GraspCandidate(
-            pose=T_cam_grasp,
-            score=1.0,
-            object_name=object_name,
-            metadata={
-                "width": 0.08437179774045944,
-                "source": "builtin-test-grasp-camera-pose",
-                "frame": "camera",
-            },
-        )
-    ]
-
-def _inject_test_place_pose(context: ExecutionContext, action_sequence: ActionSequence) -> None:
-    place_targets = [
-        action.args.get("target")
-        for action in action_sequence.actions
-        if action.name == "place"
-    ]
-    place_targets = [t for t in place_targets if t]
-    if not place_targets:
-        raise ValueError("Cannot inject test place pose: ActionSequence has no place action with a target.")
-
-    test_place_pose = [0.13080995, 1.04807103, -0.43973777, -2.41776079, 1.96632273, 0.10142964]
-    target_name = place_targets[0]
-    context.object_states.setdefault(target_name, {})["pose"] = test_place_pose
-
-
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Execute or dry-run an ActionSequence.")
-    parser.add_argument("--plan", required=True, help="Session directory, task_plan.json, or action_sequence.json.")
+    parser.add_argument(
+        "--plan",
+        required=True,
+        help="Path to action_sequence.json.",
+    )
     parser.add_argument(
         "--backend",
         default="dry-run",
@@ -284,11 +243,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Stop X5 place validation after the selected stage.",
     )
     parser.add_argument(
-        "--test-grasp-camera-pose",
-        action="store_true",
-        help="Inject the built-in camera-frame test grasp instead of using perception/grasp backends.",
-    )
-    parser.add_argument(
         "--skip-prepare",
         action="store_true",
         help="Skip ExecutionContext.prepare_for_sequence().",
@@ -315,8 +269,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     if not args.skip_prepare:
         executor.prepare(action_sequence)
-    if args.test_grasp_camera_pose:
-        _inject_test_grasp_camera_pose(executor.context, action_sequence)
     report = executor.execute_sequence(
         action_sequence,
         move_home_on_shutdown=args.move_home_on_shutdown,
