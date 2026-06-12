@@ -89,6 +89,26 @@ class FakeX5HTTPClient:
             return self._response(success=False, error="place rejected")
         return self._response(request_id=request_id)
 
+    def close_gripper(self, *, wait, request_id=None):
+        self.calls.append(("close_gripper", wait, request_id))
+        if self.fail_step == "close_gripper":
+            return self._response(success=False, error="close rejected")
+        return self._response(request_id=request_id)
+
+    def open_gripper(self, *, wait, request_id=None):
+        self.calls.append(("open_gripper", wait, request_id))
+        if (
+            self.fail_step == "initialize_open_gripper"
+            and "initialize-open-gripper" in (request_id or "")
+        ):
+            return self._response(success=False, error="initial open rejected")
+        if (
+            self.fail_step == "open_gripper"
+            and "place-open-gripper" in (request_id or "")
+        ):
+            return self._response(success=False, error="open rejected")
+        return self._response(request_id=request_id)
+
     def stop(self, arm):
         self.calls.append(("stop", arm))
         return self._response()
@@ -300,10 +320,12 @@ def test_remote_x5_backend_executes_home_approach_grasp_in_order():
     names = [call[0] for call in client.calls]
     assert names == [
         "health",
+        "open_gripper",
         "get_state",
         "move_joints",
         "movej_point",
         "movel_point",
+        "close_gripper",
     ]
     movej_pose = next(call[2] for call in client.calls if call[0] == "movej_point")
     movel_pose = next(call[2] for call in client.calls if call[0] == "movel_point")
@@ -315,6 +337,21 @@ def test_remote_x5_backend_executes_home_approach_grasp_in_order():
         movel_pose,
         result.metadata["grasp_pose_xyz_rotvec"],
     )
+
+
+def test_remote_x5_backend_initialize_fails_when_gripper_cannot_open():
+    client = FakeX5HTTPClient(fail_step="initialize_open_gripper")
+    backend = RemoteX5ActionBackend(
+        ROBOT_CONFIG,
+        CAMERA_CONFIG,
+        execute=True,
+        client=client,
+    )
+
+    with pytest.raises(RuntimeError, match="open gripper during initialize"):
+        backend.initialize()
+
+    assert [call[0] for call in client.calls] == ["health", "open_gripper"]
 
 
 def test_remote_x5_backend_splits_home_into_server_safe_joint_steps():
@@ -375,7 +412,24 @@ def test_remote_x5_backend_stops_robot_when_grasp_motion_fails():
     assert [call[0] for call in client.calls][-1] == "stop"
 
 
-def test_remote_x5_backend_dry_run_builds_place_from_home_orientation():
+def test_remote_x5_backend_stops_robot_when_gripper_close_fails():
+    client = FakeX5HTTPClient(fail_step="close_gripper")
+    backend = RemoteX5ActionBackend(
+        ROBOT_CONFIG,
+        CAMERA_CONFIG,
+        execute=True,
+        client=client,
+    )
+
+    backend.initialize()
+    result = backend.pick("number-block", grasp_candidates=[_known_grasp()])
+
+    assert result.success is False
+    assert result.metadata["failed_step"] == "close_gripper"
+    assert [call[0] for call in client.calls][-2:] == ["close_gripper", "stop"]
+
+
+def test_remote_x5_backend_dry_run_builds_place_from_fixed_orientation():
     backend = RemoteX5ActionBackend(
         ROBOT_CONFIG,
         CAMERA_CONFIG,
@@ -384,7 +438,7 @@ def test_remote_x5_backend_dry_run_builds_place_from_home_orientation():
 
     backend.initialize()
     pick_result = backend.pick("number-block", grasp_candidates=[_known_grasp()])
-    result = backend.place_on_surface(
+    result = backend.place(
         "number-block",
         "target-surface",
         target_pose=[0.4, -0.2, 0.3, 9.0, 8.0, 7.0],
@@ -404,7 +458,7 @@ def test_remote_x5_backend_dry_run_builds_place_from_home_orientation():
     assert result.metadata["target_orientation_ignored"] is True
 
 
-def test_remote_x5_backend_executes_retreat_home_preplace_place_in_order():
+def test_remote_x5_backend_executes_check_gripper_place_and_returns_home():
     client = FakeX5HTTPClient()
     backend = RemoteX5ActionBackend(
         ROBOT_CONFIG,
@@ -417,7 +471,7 @@ def test_remote_x5_backend_executes_retreat_home_preplace_place_in_order():
 
     backend.initialize()
     pick_result = backend.pick("number-block", grasp_candidates=[_known_grasp()])
-    result = backend.place_on_surface(
+    result = backend.place(
         "number-block",
         "target-surface",
         target_pose=[0.4, -0.2, 0.3, 9.0, 8.0, 7.0],
@@ -425,26 +479,85 @@ def test_remote_x5_backend_executes_retreat_home_preplace_place_in_order():
 
     assert pick_result.success is True
     assert result.success is True
-    place_calls = client.calls[5:]
-    assert [call[0] for call in place_calls] == [
-        "movel_point",
-        "get_state",
-        "move_joints",
-        "movej_point",
-        "movel_point",
+    place_start = next(
+        index
+        for index, call in enumerate(client.calls)
+        if call[0] == "movel_point" and "place-retreat" in (call[-1] or "")
+    )
+    place_calls = client.calls[place_start:]
+    request_ids = [
+        call[-1]
+        for call in place_calls
+        if call[0] in {"move_joints", "movej_point", "movel_point"}
+    ]
+    assert "place-retreat" in request_ids[0]
+    assert any("place-check-gripper-" in request_id for request_id in request_ids)
+    assert any("place-preplace" in request_id for request_id in request_ids)
+    assert any("place-place" in request_id for request_id in request_ids)
+    assert any("place-release-retreat" in request_id for request_id in request_ids)
+    assert "place-home-" in request_ids[-1]
+
+    check_gripper_calls = [
+        call
+        for call in place_calls
+        if call[0] == "move_joints"
+        and "place-check-gripper-" in (call[-1] or "")
+    ]
+    home_calls = [
+        call
+        for call in place_calls
+        if call[0] == "move_joints" and "place-home-" in (call[-1] or "")
     ]
     np.testing.assert_allclose(
-        place_calls[0][2],
+        np.degrees(check_gripper_calls[-1][2]),
+        [-15, 24, -64, 89, 44, 74, -2],
+    )
+    np.testing.assert_allclose(
+        np.degrees(home_calls[-1][2]),
+        [-24, 10, -53, 102, 101, 80, -18],
+    )
+
+    point_calls = [
+        call for call in place_calls if call[0] in {"movej_point", "movel_point"}
+    ]
+    np.testing.assert_allclose(
+        point_calls[0][2],
         pick_result.metadata["approach_pose_xyz_rotvec"],
     )
     np.testing.assert_allclose(
-        place_calls[-2][2],
-        [0.35, -0.2, 0.3, 0.0, 0.0, 0.0],
+        point_calls[1][2],
+        [0.35, -0.2, 0.3, 1.2172784, 1.2123690, 1.2159012],
     )
     np.testing.assert_allclose(
-        place_calls[-1][2],
-        [0.4, -0.2, 0.3, 0.0, 0.0, 0.0],
+        point_calls[2][2],
+        [0.4, -0.2, 0.3, 1.2172784, 1.2123690, 1.2159012],
     )
+    np.testing.assert_allclose(point_calls[3][2], point_calls[1][2])
+
+
+def test_remote_x5_backend_stops_robot_when_gripper_open_fails():
+    client = FakeX5HTTPClient(fail_step="open_gripper")
+    backend = RemoteX5ActionBackend(
+        ROBOT_CONFIG,
+        CAMERA_CONFIG,
+        execute=True,
+        execute_until="grasp",
+        place_execute_until="place",
+        client=client,
+    )
+
+    backend.initialize()
+    pick_result = backend.pick("number-block", grasp_candidates=[_known_grasp()])
+    result = backend.place(
+        "number-block",
+        "target-surface",
+        target_pose=[0.4, -0.2, 0.3],
+    )
+
+    assert pick_result.success is True
+    assert result.success is False
+    assert result.metadata["failed_step"] == "open_gripper"
+    assert [call[0] for call in client.calls][-2:] == ["open_gripper", "stop"]
 
 
 def test_remote_x5_backend_rejects_place_without_preceding_pick():
@@ -454,7 +567,7 @@ def test_remote_x5_backend_rejects_place_without_preceding_pick():
         execute=False,
     )
 
-    result = backend.place_in_container(
+    result = backend.place(
         "number-block",
         "container",
         target_pose=[0.4, -0.2, 0.3],

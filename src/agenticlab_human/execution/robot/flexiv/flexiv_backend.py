@@ -161,7 +161,7 @@ class FlexivActionBackend:
             metadata=metadata,
         )
 
-    def place_on_object(
+    def place(
         self,
         object_name: str,
         target_name: str,
@@ -170,8 +170,8 @@ class FlexivActionBackend:
     ) -> ActionResult:
         return ActionResult(
             success=False,
-            action_name="place-on-object",
-            error="Flexiv place_on_object is not implemented in this one-action test backend.",
+            action_name="place",
+            error="Flexiv place is not implemented in this one-action test backend.",
             metadata={
                 "object": object_name,
                 "target": target_name,
@@ -179,34 +179,6 @@ class FlexivActionBackend:
                 "has_target_bbox": target_bbox is not None,
                 "has_target_pose": target_pose is not None,
             },
-        )
-
-    def place_on_surface(
-        self,
-        object_name: str,
-        surface_name: str,
-        target_bbox: Optional[BBox] = None,
-        target_pose: Any = None,
-    ) -> ActionResult:
-        return ActionResult(
-            success=False,
-            action_name="place-on-surface",
-            error="Flexiv place_on_surface is not implemented in this one-action test backend.",
-            metadata={"object": object_name, "surface": surface_name, "execute": self.execute},
-        )
-
-    def place_in_container(
-        self,
-        object_name: str,
-        container_name: str,
-        target_bbox: Optional[BBox] = None,
-        target_pose: Any = None,
-    ) -> ActionResult:
-        return ActionResult(
-            success=False,
-            action_name="place-in-container",
-            error="Flexiv place_in_container is not implemented in this one-action test backend.",
-            metadata={"object": object_name, "container": container_name, "execute": self.execute},
         )
 
     def move_home(self) -> ActionResult:

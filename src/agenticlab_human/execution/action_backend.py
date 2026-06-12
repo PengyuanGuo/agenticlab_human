@@ -91,32 +91,14 @@ class ActionBackend(Protocol):
     ) -> ActionResult:
         """Pick an object using cached grasp affordances."""
 
-    def place_on_object(
+    def place(
         self,
         object_name: str,
         target_name: str,
         target_bbox: Optional[BBox] = None,
         target_pose: Any = None,
     ) -> ActionResult:
-        """Place an object on another object."""
-
-    def place_on_surface(
-        self,
-        object_name: str,
-        surface_name: str,
-        target_bbox: Optional[BBox] = None,
-        target_pose: Any = None,
-    ) -> ActionResult:
-        """Place an object on a named surface."""
-
-    def place_in_container(
-        self,
-        object_name: str,
-        container_name: str,
-        target_bbox: Optional[BBox] = None,
-        target_pose: Any = None,
-    ) -> ActionResult:
-        """Place an object into a named container."""
+        """Place an object at the target."""
 
     def move_home(self) -> ActionResult:
         """Move to a safe home pose."""
@@ -159,61 +141,21 @@ class DryRunActionBackend:
             },
         )
 
-    def place_on_object(
+    def place(
         self,
         object_name: str,
         target_name: str,
         target_bbox: Optional[BBox] = None,
         target_pose: Any = None,
     ) -> ActionResult:
-        self.calls.append({"name": "place_on_object", "object": object_name, "target": target_name})
+        self.calls.append({"name": "place", "object": object_name, "target": target_name})
         return ActionResult(
             success=True,
-            action_name="place-on-object",
-            message=f"Dry-run place {object_name} on {target_name}.",
+            action_name="place",
+            message=f"Dry-run place {object_name} at {target_name}.",
             metadata={
                 "object": object_name,
                 "target": target_name,
-                "has_target_bbox": target_bbox is not None,
-                "has_target_pose": target_pose is not None,
-            },
-        )
-
-    def place_on_surface(
-        self,
-        object_name: str,
-        surface_name: str,
-        target_bbox: Optional[BBox] = None,
-        target_pose: Any = None,
-    ) -> ActionResult:
-        self.calls.append({"name": "place_on_surface", "object": object_name, "surface": surface_name})
-        return ActionResult(
-            success=True,
-            action_name="place-on-surface",
-            message=f"Dry-run place {object_name} on {surface_name}.",
-            metadata={
-                "object": object_name,
-                "surface": surface_name,
-                "has_target_bbox": target_bbox is not None,
-                "has_target_pose": target_pose is not None,
-            },
-        )
-
-    def place_in_container(
-        self,
-        object_name: str,
-        container_name: str,
-        target_bbox: Optional[BBox] = None,
-        target_pose: Any = None,
-    ) -> ActionResult:
-        self.calls.append({"name": "place_in_container", "object": object_name, "container": container_name})
-        return ActionResult(
-            success=True,
-            action_name="place-in-container",
-            message=f"Dry-run place {object_name} in {container_name}.",
-            metadata={
-                "object": object_name,
-                "container": container_name,
                 "has_target_bbox": target_bbox is not None,
                 "has_target_pose": target_pose is not None,
             },

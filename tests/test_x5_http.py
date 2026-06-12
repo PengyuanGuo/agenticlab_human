@@ -101,6 +101,42 @@ def test_cartesian_point_commands_update_mock_tcp_pose():
     assert movel_result.state_after.arms["left"].tcp_pose_xyzw[:3] == movel_target[:3]
 
 
+def test_single_gripper_command_round_trip_updates_robot_level_state():
+    with TestClient(_build_app()) as transport:
+        client = X5HTTPClient("http://testserver", timeout_s=None, session=transport)
+
+        close_result = client.close_gripper(request_id="test-close-gripper")
+        open_result = client.open_gripper(request_id="test-open-gripper")
+
+    assert close_result.success is True
+    assert close_result.accepted_command == {
+        "type": "set_gripper",
+        "position": 0.0,
+        "wait": True,
+    }
+    assert close_result.state_after.gripper.position == 0.0
+    assert close_result.state_after.gripper.raw_position == 0
+    assert open_result.success is True
+    assert open_result.state_after.gripper.position == 1.0
+    assert open_result.state_after.gripper.raw_position == 1000
+
+
+def test_invalid_gripper_position_is_rejected_by_contract():
+    with TestClient(_build_app()) as transport:
+        response = transport.post(
+            "/v1/robot/command",
+            json={
+                "request_id": "bad-gripper-position",
+                "command": {
+                    "type": "set_gripper",
+                    "position": 1.1,
+                },
+            },
+        )
+
+    assert response.status_code == 422
+
+
 def test_invalid_joint_count_is_rejected_by_contract():
     with TestClient(_build_app()) as transport:
         response = transport.post(

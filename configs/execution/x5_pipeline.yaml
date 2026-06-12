@@ -1,0 +1,29 @@
+pipeline:
+  output_dir: output/execution
+  x5_server_url: http://192.168.1.15:8000
+  grasp_server_url: http://127.0.0.1:8010
+  robot_config: configs/robot/x5_config.yaml
+  camera_config: configs/perception/camera_config.yaml
+  camera_name: Gemini335
+  arm: left
+  place_depth_patch_px: 9
+  # Calibrate before real execution. Null is accepted only without --execute.
+  place_offset_world_x_m: -0.15
+  request_timeout_s: 120.0
+
+detector:
+  type: fine_tuned_yolo
+  model_path: train_yolo/runs/train/tabletop_blocks_cup_bin_001_yolo26s/weights/best.pt
+  confidence: 0.25
+  image_size: 960
+
+grasp:
+  mask_offset_px: 10
+  max_grasps: 20
+  score_threshold: 0.0
+  collision_detection: true
+  nms: true
+
+x5_place:
+  default_place_orientation_rotvec: [1.2172784, 1.2123690, 1.2159012]
+  place_approach_offset_x_m: -0.05

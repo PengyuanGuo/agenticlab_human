@@ -7,7 +7,7 @@ __pycache__/
 output/
 Log/
 src/agenticlab_human/output/
-third_party/downward
+third_party/
 
 train_yolo/datasets
 train_yolo/raw
@@ -17,3 +17,5 @@ train_yolo/runs
 *.pt
 *.ts
 datasets/
+
+data/checkpoints/

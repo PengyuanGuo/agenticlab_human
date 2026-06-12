@@ -43,7 +43,7 @@ def test_execution_context_prepares_bbox_and_grasp_cache():
         task_description="test",
         actions=[
             Action(id=1, name="pick", args={"object": "green-cube-1", "from": "table-1"}),
-            Action(id=2, name="place-on-object", args={"object": "green-cube-1", "target": "box-1"}),
+            Action(id=2, name="place", args={"object": "green-cube-1", "target": "box-1"}),
         ],
     )
     context = ExecutionContext(
@@ -72,6 +72,10 @@ def test_action_executor_dry_run_executes_historical_sequence():
     assert execution_report.total_actions == 12
     assert len(execution_report.results) == 12
     assert execution_report.results[0].metadata["grasp_count"] == 0
+    assert all(
+        result.action_name in {"pick", "place"}
+        for result in execution_report.results
+    )
 
 
 def test_flexiv_backend_plans_pick_from_camera_frame_grasp_without_execution():

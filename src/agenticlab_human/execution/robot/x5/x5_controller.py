@@ -15,11 +15,13 @@ from agenticlab_human.execution.robot.x5.contracts import (
     ArmState,
     ComponentHealth,
     GetStateCommand,
+    GripperState,
     MoveJPointCommand,
     MoveJointsCommand,
     MoveLPointCommand,
     RobotCommand,
     RobotState,
+    SetGripperCommand,
     StopCommand,
 )
 
@@ -60,6 +62,13 @@ class MockX5Controller:
 
         self._initialized = False
         self._lock = threading.Lock()
+        self._gripper = GripperState(
+            connected=False,
+            moving=False,
+            position=1.0,
+            raw_position=1000,
+            grip_status=1,
+        )
         self._arms = {
             str(arm): ArmState(
                 connected=False,
@@ -76,6 +85,7 @@ class MockX5Controller:
             self._initialized = True
             for state in self._arms.values():
                 state.connected = True
+            self._gripper.connected = True
 
     def execute(self, command: RobotCommand) -> None:
         with self._lock:
@@ -98,6 +108,13 @@ class MockX5Controller:
                 state.tcp_pose_xyzw = xyz + list(quaternion)
                 state.moving = False
                 return
+            if command_type == "set_gripper":
+                self._gripper.moving = True
+                self._gripper.position = float(command.position)
+                self._gripper.raw_position = int(round(command.position * 1000.0))
+                self._gripper.grip_status = 1
+                self._gripper.moving = False
+                return
             if command_type == "stop":
                 for state in self._selected_states(command.arm):
                     state.moving = False
@@ -111,7 +128,8 @@ class MockX5Controller:
         with self._lock:
             self._require_initialized()
             arms = {name: copy.deepcopy(state) for name, state in self._arms.items()}
-        return RobotState(arms=arms, timestamp_ns=time.time_ns())
+            gripper = copy.deepcopy(self._gripper)
+        return RobotState(arms=arms, gripper=gripper, timestamp_ns=time.time_ns())
 
     def health(self) -> ComponentHealth:
         with self._lock:
@@ -127,6 +145,8 @@ class MockX5Controller:
             for state in self._arms.values():
                 state.moving = False
                 state.connected = False
+            self._gripper.moving = False
+            self._gripper.connected = False
             self._initialized = False
 
     def _require_initialized(self) -> None:
@@ -184,6 +204,8 @@ class RealX5Controller:
         max_movel_point_rotation_deg: float = 30.0,
         joint_limits_deg: Sequence[Sequence[float]] | None = None,
         stop_on_shutdown: bool = False,
+        gripper_config: Mapping[str, Any] | None = None,
+        gripper_controller: Any | None = None,
         x5_api: Any | None = None,
     ) -> None:
         if not arm_configs:
@@ -229,6 +251,30 @@ class RealX5Controller:
             joint_limits_deg or self.DEFAULT_JOINT_LIMITS_DEG
         )
         self._stop_on_shutdown = bool(stop_on_shutdown)
+        self._gripper_config = dict(gripper_config or {})
+        self._gripper = gripper_controller
+        self._owns_gripper = gripper_controller is None
+        self._gripper_enabled = (
+            gripper_controller is not None
+            or bool(self._gripper_config.get("enabled", False))
+        )
+        self._gripper_ready = False
+        self._gripper_force = int(self._gripper_config.get("force", 100))
+        self._gripper_closed_position = int(
+            self._gripper_config.get("closed_position", 0)
+        )
+        self._gripper_open_position = int(
+            self._gripper_config.get("open_position", 1000)
+        )
+        self._gripper_init_timeout_s = float(
+            self._gripper_config.get("init_timeout_s", 10.0)
+        )
+        self._gripper_move_timeout_s = float(
+            self._gripper_config.get("move_timeout_s", 5.0)
+        )
+        self._gripper_poll_interval_s = float(
+            self._gripper_config.get("poll_interval_s", 0.1)
+        )
 
         if self._default_speed_ratio <= 0.0:
             raise ValueError("default_speed_ratio must be positive")
@@ -247,6 +293,25 @@ class RealX5Controller:
         for name, value in cartesian_limits.items():
             if value <= 0.0:
                 raise ValueError(f"{name} must be positive")
+        if self._gripper_enabled:
+            if not 20 <= self._gripper_force <= 100:
+                raise ValueError("gripper.force must be in [20, 100]")
+            for name, value in (
+                ("closed_position", self._gripper_closed_position),
+                ("open_position", self._gripper_open_position),
+            ):
+                if not 0 <= value <= 1000:
+                    raise ValueError(f"gripper.{name} must be in [0, 1000]")
+            if self._gripper_closed_position == self._gripper_open_position:
+                raise ValueError(
+                    "gripper.closed_position and gripper.open_position must differ"
+                )
+            if self._gripper_init_timeout_s <= 0.0:
+                raise ValueError("gripper.init_timeout_s must be positive")
+            if self._gripper_move_timeout_s <= 0.0:
+                raise ValueError("gripper.move_timeout_s must be positive")
+            if self._gripper_poll_interval_s <= 0.0:
+                raise ValueError("gripper.poll_interval_s must be positive")
 
         self._lock = threading.RLock()
         self._x5 = x5_api
@@ -281,10 +346,13 @@ class RealX5Controller:
 
                     self._set_mode(handle)
                     self._initialize_tool_frame(arm, handle)
+                if self._gripper_enabled:
+                    self._initialize_gripper()
                 self._initialized = True
                 self._last_error = ""
             except Exception as exc:
                 self._last_error = str(exc)
+                self._shutdown_gripper()
                 self._disconnect_all()
                 raise
 
@@ -314,6 +382,9 @@ class RealX5Controller:
             if command_type == "movel_point":
                 self._move_point(command, motion="movl")
                 return
+            if command_type == "set_gripper":
+                self._set_gripper(command)
+                return
             raise ValueError(
                 f"unsupported robot command type={command_type!r} "
                 f"class={type(command).__module__}.{type(command).__name__}"
@@ -326,11 +397,18 @@ class RealX5Controller:
                 arm: self._read_arm_state(arm, handle)
                 for arm, handle in self._handles.items()
             }
-        return RobotState(arms=arms, timestamp_ns=time.time_ns())
+            gripper = self._read_gripper_state()
+        return RobotState(
+            arms=arms,
+            gripper=gripper,
+            timestamp_ns=time.time_ns(),
+        )
 
     def health(self) -> ComponentHealth:
         with self._lock:
             ready = self._initialized and len(self._handles) == len(self._arm_configs)
+            if self._gripper_enabled:
+                ready = ready and self._gripper_ready
             if ready:
                 arm_details = ", ".join(
                     f"{arm}@{self._arm_configs[arm]['robot_ip']}"
@@ -341,6 +419,8 @@ class RealX5Controller:
                     detail += f"; tool_frames={self._active_tool_frame_nos}"
                 if self._versions:
                     detail += f"; versions={self._versions}"
+                if self._gripper_enabled:
+                    detail += "; gripper=ready"
             else:
                 detail = self._last_error or "not initialized"
         return ComponentHealth(ready=ready, backend="x5", detail=detail)
@@ -349,8 +429,99 @@ class RealX5Controller:
         with self._lock:
             if self._stop_on_shutdown:
                 self._stop_target("all", suppress_errors=True)
+            self._shutdown_gripper()
             self._disconnect_all()
             self._initialized = False
+
+    def _initialize_gripper(self) -> None:
+        if self._gripper is None:
+            port = self._gripper_config.get("port")
+            if not port:
+                raise ValueError("robot.gripper.port is required when gripper is enabled")
+            module = importlib.import_module(
+                "agenticlab_human.execution.robot.x5.gripper_controller"
+            )
+            controller_cls = getattr(module, "GripperController")
+            self._gripper = controller_cls(
+                port=str(port),
+                baudrate=int(self._gripper_config.get("baudrate", 115200)),
+                gripper_id=int(self._gripper_config.get("gripper_id", 1)),
+            )
+
+        if self._gripper.get_init_status() != 1:
+            try:
+                self._gripper.init_gripper(
+                    timeout_s=self._gripper_init_timeout_s,
+                    poll_interval_s=self._gripper_poll_interval_s,
+                )
+            except TypeError:
+                self._gripper.init_gripper()
+        self._gripper.set_force(self._gripper_force)
+        self._gripper_ready = True
+
+    def _shutdown_gripper(self) -> None:
+        gripper = self._gripper
+        self._gripper_ready = False
+        if gripper is None:
+            return
+        if self._owns_gripper:
+            self._try_call(getattr(gripper, "close", None))
+            self._gripper = None
+
+    def _set_gripper(self, command: SetGripperCommand) -> None:
+        if not self._gripper_enabled or self._gripper is None or not self._gripper_ready:
+            raise RuntimeError("single gripper is not configured or initialized")
+
+        target = int(
+            round(
+                self._gripper_closed_position
+                + float(command.position)
+                * (self._gripper_open_position - self._gripper_closed_position)
+            )
+        )
+        self._gripper.set_position(target)
+        if not command.wait:
+            return
+
+        deadline = time.monotonic() + self._gripper_move_timeout_s
+        while True:
+            status = self._gripper.get_grip_status()
+            if status in (1, 2):
+                return
+            if status == 3:
+                raise RuntimeError("gripper reported object-drop status")
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    f"gripper movement timed out after "
+                    f"{self._gripper_move_timeout_s:.1f}s"
+                )
+            time.sleep(self._gripper_poll_interval_s)
+
+    def _read_gripper_state(self) -> GripperState | None:
+        if not self._gripper_enabled:
+            return None
+        if self._gripper is None or not self._gripper_ready:
+            return GripperState(connected=False, moving=False)
+
+        status = self._gripper.get_grip_status()
+        raw_position = self._gripper.get_current_position()
+        position = (
+            self._normalized_gripper_position(raw_position)
+            if raw_position is not None
+            else None
+        )
+        return GripperState(
+            connected=True,
+            moving=status == 0,
+            position=position,
+            raw_position=raw_position,
+            grip_status=status,
+        )
+
+    def _normalized_gripper_position(self, raw_position: int) -> float:
+        span = self._gripper_open_position - self._gripper_closed_position
+        position = (int(raw_position) - self._gripper_closed_position) / span
+        return min(1.0, max(0.0, float(position)))
 
     def _load_x5(self) -> Any:
         if self._x5 is None:

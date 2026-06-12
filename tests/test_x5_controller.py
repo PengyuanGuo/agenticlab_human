@@ -7,6 +7,7 @@ from agenticlab_human.execution.robot.x5.contracts import (
     MoveJPointCommand,
     MoveJointsCommand,
     MoveLPointCommand,
+    SetGripperCommand,
     StopCommand,
 )
 from agenticlab_human.execution.robot.x5.x5_controller import (
@@ -163,7 +164,39 @@ class FakeX5API:
         self.calls.append(("abort", handle))
 
 
-def _build_controller(fake_x5):
+class FakeGripper:
+    def __init__(self):
+        self.calls = []
+        self.init_status = 0
+        self.grip_status = 1
+        self.position = 1000
+
+    def get_init_status(self):
+        self.calls.append(("get_init_status",))
+        return self.init_status
+
+    def init_gripper(self, *, timeout_s, poll_interval_s):
+        self.calls.append(("init_gripper", timeout_s, poll_interval_s))
+        self.init_status = 1
+
+    def set_force(self, force):
+        self.calls.append(("set_force", force))
+
+    def set_position(self, position):
+        self.calls.append(("set_position", position))
+        self.position = position
+        self.grip_status = 1
+
+    def get_grip_status(self):
+        self.calls.append(("get_grip_status",))
+        return self.grip_status
+
+    def get_current_position(self):
+        self.calls.append(("get_current_position",))
+        return self.position
+
+
+def _build_controller(fake_x5, *, gripper=None):
     controller = RealX5Controller(
         {
             "left": {
@@ -181,6 +214,16 @@ def _build_controller(fake_x5):
         default_speed_ratio=0.05,
         max_command_speed_ratio=0.1,
         max_joint_delta_deg=5.0,
+        gripper_config={
+            "enabled": gripper is not None,
+            "force": 80,
+            "closed_position": 0,
+            "open_position": 1000,
+            "init_timeout_s": 3.0,
+            "move_timeout_s": 2.0,
+            "poll_interval_s": 0.01,
+        },
+        gripper_controller=gripper,
     )
     controller.initialize()
     return controller
@@ -219,6 +262,28 @@ def test_real_x5_controller_reads_state_in_public_units():
     calls = [call[0] for call in fake_x5.calls]
     assert calls.index("set_tf") < calls.index("get_tf")
     assert calls.index("get_tf") < calls.index("set_tfno") < calls.index("get_tfno")
+
+
+def test_real_x5_controller_initializes_and_moves_single_gripper():
+    fake_x5 = FakeX5API()
+    gripper = FakeGripper()
+    controller = _build_controller(fake_x5, gripper=gripper)
+
+    controller.execute(SetGripperCommand(position=0.0, wait=True))
+    closed_state = controller.get_state().gripper
+    controller.execute(SetGripperCommand(position=1.0, wait=True))
+    open_state = controller.get_state().gripper
+
+    assert ("init_gripper", 3.0, 0.01) in gripper.calls
+    assert ("set_force", 80) in gripper.calls
+    assert ("set_position", 0) in gripper.calls
+    assert closed_state.connected is True
+    assert closed_state.position == 0.0
+    assert closed_state.raw_position == 0
+    assert ("set_position", 1000) in gripper.calls
+    assert open_state.position == 1.0
+    assert open_state.raw_position == 1000
+    assert "gripper=ready" in controller.health().detail
 
 
 def test_real_x5_controller_stop_uses_xapi_stop_abort_sequence():

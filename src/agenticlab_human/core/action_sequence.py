@@ -7,8 +7,8 @@ typed, JSON-serializable representation:
       "task": "stack-cubes-on-pink-plate",
       "task_description": "Stack the cubes ...",
       "actions": [
-        {"id": 1, "name": "pick",            "args": {"object": "green-cube-1", "from": "orange-cube-1"}},
-        {"id": 2, "name": "place-on-object", "args": {"object": "green-cube-1", "target": "yellow-cube-1"}},
+        {"id": 1, "name": "pick",  "args": {"object": "green-cube-1", "from": "orange-cube-1"}},
+        {"id": 2, "name": "place", "args": {"object": "green-cube-1", "target": "yellow-cube-1"}},
         ...
       ],
       "goal_conditions": ["(on-top-of orange-cube-1 pink-plate-1)", ...]
@@ -58,6 +58,18 @@ def _rename_param(name: str) -> str:
     return _PARAM_RENAME.get(name, name)
 
 
+def _default_param_keys(action_name: str, count: int) -> List[str]:
+    defaults = {
+        "pick": ["object", "from"],
+        "place": ["object", "target"],
+    }
+    keys = defaults.get(action_name, [])
+    return [
+        keys[index] if index < len(keys) else f"arg{index}"
+        for index in range(count)
+    ]
+
+
 # ---------------------------------------------------------------------------
 # PDDL helpers
 # ---------------------------------------------------------------------------
@@ -80,6 +92,21 @@ def _parse_pddl_string(pddl_str: str):
     if not parts:
         return "", []
     return parts[0], parts[1:]
+
+
+def _canonical_action(name: str, args: Dict[str, str]) -> tuple[str, Dict[str, str]]:
+    """Normalize the public place contract to object/target arguments."""
+
+    if name == "place":
+        normalized_args = dict(args)
+        if "target" not in normalized_args:
+            for key in ("surface", "location", "container", "to"):
+                value = normalized_args.pop(key, None)
+                if value:
+                    normalized_args["target"] = value
+                    break
+        return "place", normalized_args
+    return name, args
 
 
 def _make_task_slug(description: str) -> str:
@@ -108,10 +135,11 @@ class Action:
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "Action":
+        name, args = _canonical_action(d["name"], d["args"])
         return cls(
             id=d["id"],
-            name=d["name"],
-            args=d["args"],
+            name=name,
+            args=args,
             pddl_str=d.get("pddl_str"),
         )
 
@@ -136,12 +164,16 @@ class ActionSequence:
 
         actions: List[Action] = []
         for i, pddl_str in enumerate(task_plan.action_sequence, start=1):
-            name, raw_args = _parse_pddl_string(pddl_str)
-            keys = param_map.get(name, [])
+            raw_name, raw_args = _parse_pddl_string(pddl_str)
+            keys = param_map.get(
+                raw_name,
+                _default_param_keys(raw_name, len(raw_args)),
+            )
             args = {
                 (keys[j] if j < len(keys) else f"arg{j}"): v
                 for j, v in enumerate(raw_args)
             }
+            name, args = _canonical_action(raw_name, args)
             actions.append(Action(id=i, name=name, args=args, pddl_str=pddl_str))
 
         return cls(
@@ -164,12 +196,16 @@ class ActionSequence:
         param_map = _extract_action_params(domain_content) if domain_content else {}
         actions: List[Action] = []
         for i, pddl_str in enumerate(pddl_strings, start=1):
-            name, raw_args = _parse_pddl_string(pddl_str)
-            keys = param_map.get(name, [])
+            raw_name, raw_args = _parse_pddl_string(pddl_str)
+            keys = param_map.get(
+                raw_name,
+                _default_param_keys(raw_name, len(raw_args)),
+            )
             args = {
                 (keys[j] if j < len(keys) else f"arg{j}"): v
                 for j, v in enumerate(raw_args)
             }
+            name, args = _canonical_action(raw_name, args)
             actions.append(Action(id=i, name=name, args=args, pddl_str=pddl_str))
         return cls(
             task=task or _make_task_slug(task_description),

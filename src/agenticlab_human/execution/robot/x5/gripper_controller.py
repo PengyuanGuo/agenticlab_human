@@ -58,19 +58,21 @@ class GripperController:
         response = self.ser.read(5 + 2 * count) # 0x03 返回 5 + 2*N 字节
         return response
 
-    def init_gripper(self):
+    def init_gripper(self, timeout_s: float = 10.0, poll_interval_s: float = 0.5):
         """
         初始化夹爪。在断电或异常后需要先调用此接口。
         寄存器：0x0100
         """
         print(f"正在初始化夹爪 ID: {self.gripper_id}...")
         self._send_command(0x06, 0x0100, 1)
-        # 等待初始化完成
+        deadline = time.monotonic() + float(timeout_s)
         while True:
             if self.get_init_status() == 1:
                 print("夹爪初始化成功")
                 break
-            time.sleep(0.5)
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"夹爪初始化超时: {timeout_s:.1f}s")
+            time.sleep(float(poll_interval_s))
 
     def set_force(self, force):
         """

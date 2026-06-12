@@ -134,12 +134,16 @@ Phase 3 基础控制代码已实现：
   - 回 home 后读取真实 TCP rotvec，并覆盖 target pose 自带的姿态。
   - pre-place 只在 world X 上使用带符号 offset，不修改 Y/Z。
   - `place_execute_until: retreat|home|preplace|place` 支持逐级验证。
+- 单夹爪 HTTP command 已实现：
+  - `set_gripper.position=0.0` 为闭合，`1.0` 为完全打开。
+  - Server 将归一化位置映射到大寰夹爪寄存器位置 `0..1000`。
+  - pick 到 grasp 后等待 close 完成，place 到目标后等待 open 完成。
 
 暂未实现或验证：
 
 - `scene_provider.py` 的 Remote RGB-D `SceneProvider`。
 - `stop` 真机实测。
-- gripper command。
+- gripper command 真机实测。
 - X5 Cartesian IK 可达性预检查。
 
 已完成真机验证：
@@ -239,6 +243,22 @@ NPZ 避免将 RGB/depth 展开成体积很大的 JSON list。
   }
 }
 ```
+
+控制唯一夹爪：
+
+```json
+{
+  "request_id": "close-gripper-001",
+  "command": {
+    "type": "set_gripper",
+    "position": 0.0,
+    "wait": true
+  }
+}
+```
+
+`position=0.0` 为闭合，`position=1.0` 为完全打开。命令不带 `arm`，
+因为当前系统只有一个夹爪。
 
 停止：
 
@@ -346,6 +366,9 @@ with X5HTTPClient("http://192.168.1.15:8000") as client:
 
     frame = client.capture_rgbd()
     print(frame.rgb.shape, frame.depth_mm.shape, frame.intrinsics)
+
+    client.close_gripper()
+    client.open_gripper()
 ```
 
 运行测试：
@@ -421,6 +444,17 @@ X5HTTPClient.movej_point()/movel_point()
   -> x5.Point(..., uf=0, tf=active TF, cfg=current cfg)
   -> x5.movj(Point) or x5.movl(Point)
   -> optional x5.wait_move_done()
+```
+
+单夹爪路径：
+
+```text
+X5HTTPClient.close_gripper()/open_gripper()
+  -> set_gripper(position=0.0/1.0)
+  -> POST /v1/robot/command
+  -> RealX5Controller maps position to closed_position/open_position
+  -> GripperController.set_position(raw_position)
+  -> poll get_grip_status() until motion completes or timeout
 ```
 
 ## 后续计划
@@ -637,7 +671,7 @@ movel_point(approach)
 
 1. 按零移动、`movej(Point)`、`movel(Point)` 顺序完成真机验证。
 2. 增加 X5 IK 可达性预检查。
-3. 接入夹爪后增加 `set_gripper`。
+3. 真机验证 `set_gripper` 的 close/open 和超时行为。
 
 ### Phase 3.5：Remote pick trajectory 验证
 
@@ -719,8 +753,7 @@ python -m agenticlab_human.execution.robot.x5.x5_remote_backend \
      0.78333336 0.0 0.6216019
 ```
 
-当前 `pick` 只完成运动到 grasp pose，不控制夹爪。retreat 在紧接着的 place
-动作开头执行。接入 `set_gripper` 后完整动作是：
+当前完整动作是：
 
 ```text
 home -> approach -> grasp -> close gripper
@@ -774,7 +807,7 @@ world transform。target 自带的 orientation 会被忽略。
 3. `preplace`：使用 home rotvec，`movej(Point)` 到 world-X offset 点。
 4. `place`：从 pre-place `movel(Point)` 到最终 target XYZ。
 
-当前 place 仅执行机械臂轨迹，不包含松开夹爪。
+当 `place_execute_until: place` 时，最终 place 运动完成后会等待夹爪打开。
 
 ### Phase 4：AgenticLab 接入
 
@@ -782,7 +815,7 @@ world transform。target 自带的 orientation 会被忽略。
 2. 将 remote scene provider 交给 `ExecutionContext`。
 3. Client 本地运行 YOLO 和 grasp backend。
 4. 将 `RemoteX5ActionBackend` 接入正式 action execution 配置。
-5. 接入 gripper HTTP command，补齐 pick close 和 place open。
+5. 真机验证 gripper HTTP command、pick close 和 place open。
 
 ### Phase 5：安全与可靠性
 

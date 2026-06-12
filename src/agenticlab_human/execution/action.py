@@ -78,12 +78,8 @@ class ActionExecutor:
     def execute_action(self, action: SequenceAction) -> ActionResult:
         if action.name == "pick":
             return self._do_pick(action)
-        if action.name == "place-on-object":
-            return self._do_place_on_object(action)
-        if action.name in {"place-on-surface", "place-on-table"}:
-            return self._do_place_on_surface(action)
-        if action.name == "place-in-container":
-            return self._do_place_in_container(action)
+        if action.name == "place":
+            return self._do_place(action)
         if action.name in {"move-home", "move_to_home"}:
             return self.backend.move_home()
         return ActionResult(
@@ -119,8 +115,7 @@ class ActionExecutor:
         result.metadata.setdefault("action_id", action.id)
         return result
 
-    # TODO: remove redundant place action types after implemented whole pipeline on real robot
-    def _do_place_on_object(self, action: SequenceAction) -> ActionResult:
+    def _do_place(self, action: SequenceAction) -> ActionResult:
         object_name = action.args.get("object")
         target_name = action.args.get("target")
         if not object_name:
@@ -137,7 +132,7 @@ class ActionExecutor:
                 metadata={"action_id": action.id, "target": target_name},
             )
 
-        result = self.backend.place_on_object(
+        result = self.backend.place(
             object_name=object_name,
             target_name=target_name,
             target_bbox=self.context.get_bbox(target_name),
@@ -149,44 +144,6 @@ class ActionExecutor:
             )
         if result.success:
             self.context.mark_object_location(object_name, target_name)
-        result.metadata.setdefault("action_id", action.id)
-        return result
-
-    def _do_place_on_surface(self, action: SequenceAction) -> ActionResult:
-        object_name = action.args.get("object")
-        surface_name = action.args.get("surface") or action.args.get("target") or action.args.get("location")
-        if not object_name:
-            return self._missing_arg(action, "object")
-        if not surface_name:
-            return self._missing_arg(action, "surface")
-
-        result = self.backend.place_on_surface(
-            object_name=object_name,
-            surface_name=surface_name,
-            target_bbox=self.context.get_bbox(surface_name),
-            target_pose=self.context.get_object_pose(surface_name),
-        )
-        if result.success:
-            self.context.mark_object_location(object_name, surface_name)
-        result.metadata.setdefault("action_id", action.id)
-        return result
-
-    def _do_place_in_container(self, action: SequenceAction) -> ActionResult:
-        object_name = action.args.get("object")
-        container_name = action.args.get("container") or action.args.get("target")
-        if not object_name:
-            return self._missing_arg(action, "object")
-        if not container_name:
-            return self._missing_arg(action, "container")
-
-        result = self.backend.place_in_container(
-            object_name=object_name,
-            container_name=container_name,
-            target_bbox=self.context.get_bbox(container_name),
-            target_pose=self.context.get_object_pose(container_name),
-        )
-        if result.success:
-            self.context.mark_object_location(object_name, container_name)
         result.metadata.setdefault("action_id", action.id)
         return result
 
@@ -265,16 +222,10 @@ def _inject_test_grasp_camera_pose(context: ExecutionContext, action_sequence: A
     ]
 
 def _inject_test_place_pose(context: ExecutionContext, action_sequence: ActionSequence) -> None:
-    _PLACE_ACTION_NAMES = {"place-on-object", "place-on-surface", "place-on-table", "place-in-container"}
-    _TARGET_ARG_KEYS = ("target", "surface", "location", "container")
-
     place_targets = [
-        next(
-            (action.args[key] for key in _TARGET_ARG_KEYS if action.args.get(key)),
-            None,
-        )
+        action.args.get("target")
         for action in action_sequence.actions
-        if action.name in _PLACE_ACTION_NAMES
+        if action.name == "place"
     ]
     place_targets = [t for t in place_targets if t]
     if not place_targets:

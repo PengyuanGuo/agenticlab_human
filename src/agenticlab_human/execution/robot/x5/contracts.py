@@ -96,8 +96,17 @@ class ArmState(BaseModel):
     gripper_position: Optional[float] = None
 
 
+class GripperState(BaseModel):
+    connected: bool
+    moving: bool
+    position: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    raw_position: Optional[int] = Field(default=None, ge=0, le=1000)
+    grip_status: Optional[int] = Field(default=None, ge=0, le=3)
+
+
 class RobotState(BaseModel):
     arms: Dict[str, ArmState]
+    gripper: Optional[GripperState] = None
     timestamp_ns: int
 
 
@@ -144,12 +153,21 @@ class StopCommand(BaseModel):
     arm: ArmTarget = "all"
 
 
+class SetGripperCommand(BaseModel):
+    """Set the single gripper position: 0.0 closed, 1.0 fully open."""
+
+    type: Literal["set_gripper"] = "set_gripper"
+    position: float = Field(ge=0.0, le=1.0)
+    wait: bool = True
+
+
 RobotCommand = Annotated[
     Union[
         GetStateCommand,
         MoveJointsCommand,
         MoveJPointCommand,
         MoveLPointCommand,
+        SetGripperCommand,
         StopCommand,
     ],
     Field(discriminator="type"),

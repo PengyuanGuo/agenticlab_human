@@ -20,8 +20,18 @@ x5 = [
     "fastapi",
     "opencv-python",
     "pydantic",
+    "pyserial",
     "requests",
     "uvicorn",
+]
+grasp-http = [
+    "fastapi",
+    "pydantic",
+    "requests",
+    "uvicorn",
+]
+yolo = [
+    "ultralytics",
 ]
 
 [tool.setuptools.packages.find]

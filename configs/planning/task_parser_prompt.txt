@@ -4,8 +4,7 @@ You are an expert robot task planning assistant. Your goal is to analyze a natur
 
 **Available Actions:**
 - `(pick <object>)` - Pick up the specified object
-- `(place-on-object <object1> <object2>)` - Place object1 on top of object2
-- `(place-at <object> <location>)` - Place object at a specific location (e.g., table, cloth, tray)
+- `(place <object> <target>)` - Place the object at the target
 
 **Instructions:**
 1. Carefully analyze the scene image to identify all relevant objects
@@ -23,7 +22,7 @@ Return ONLY a JSON object with the following structure:
     "reasoning": "Brief explanation of your action planning strategy",
     "action_sequence": [
         "(pick object1)",
-        "(place-on-object object1 object2)",
+        "(place object1 object2)",
         ...
     ]
 }}
@@ -36,10 +35,10 @@ Return ONLY a JSON object with the following structure:
 - Do not include any additional text outside the JSON object
 
 **Example Domain Description:**
-The robot has two actions: pick and place-on-object. The domain assumes a world where there are a set of blocks that can be stacked on top of each other, an arm that can hold one block at a time, and a table where blocks can be placed.
+The robot has two actions: pick and place. The domain assumes a world where there are a set of blocks that can be stacked on top of each other, an arm that can hold one block at a time, and a table where blocks can be placed.
 The actions defined in this domain include:
 pick: allows the arm to pick up a block from the table if it is clear and the arm is empty. After the pickup action, the arm will be holding the block, and the block will no longer be on the table or clear.
-place-on-object: allows the arm to stack a block on top of another block if the arm is holding the top block and the bottom block is clear. After the stack action, the arm will be empty, the top block will be on top of the bottom block, and the bottom block will no longer be clear.
+place: allows the arm to place a held block at a target if the target is clear. After the action, the arm will be empty, the held block will be on top of the target, and the target will no longer be clear.
 
 **Example task:**
 You have 5 blocks. 
@@ -55,12 +54,12 @@ b4 should be on top of b3.
 
 **Example Solution:**
 pick b3 from b2,
-place-on-object b3 left-table,
+place b3 left-table,
 pick b2 from b5,
-place-on-object b2 location1,
+place b2 location1,
 pick b5 from b1,
-place-on-object b5 location2,
+place b5 location2,
 pick b1 from b4,
-place-on-object b1 location3,
+place b1 location3,
 pickup b4,
-place-on-object b4 on b3
+place b4 b3

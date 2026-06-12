@@ -23,6 +23,7 @@ from agenticlab_human.execution.robot.x5.contracts import (
     RobotCommand,
     RobotCommandRequest,
     RobotCommandResponse,
+    SetGripperCommand,
     StopCommand,
     decode_rgbd_frame,
 )
@@ -154,6 +155,36 @@ class X5HTTPClient:
 
     def stop(self, arm: str = "all") -> RobotCommandResponse:
         return self.send_command(StopCommand(arm=arm))
+
+    def set_gripper(
+        self,
+        position: float,
+        *,
+        wait: bool = True,
+        request_id: str | None = None,
+    ) -> RobotCommandResponse:
+        """Set the single gripper position: 0.0 closed, 1.0 fully open."""
+
+        return self.send_command(
+            SetGripperCommand(position=position, wait=wait),
+            request_id=request_id,
+        )
+
+    def close_gripper(
+        self,
+        *,
+        wait: bool = True,
+        request_id: str | None = None,
+    ) -> RobotCommandResponse:
+        return self.set_gripper(0.0, wait=wait, request_id=request_id)
+
+    def open_gripper(
+        self,
+        *,
+        wait: bool = True,
+        request_id: str | None = None,
+    ) -> RobotCommandResponse:
+        return self.set_gripper(1.0, wait=wait, request_id=request_id)
 
     def close(self) -> None:
         if self._owns_session and hasattr(self._session, "close"):

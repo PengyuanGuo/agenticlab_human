@@ -242,6 +242,7 @@ def create_app_from_config(config_path: str = DEFAULT_CONFIG_PATH) -> tuple[Fast
             ),
             joint_limits_deg=robot_config.get("joint_limits_deg"),
             stop_on_shutdown=bool(robot_config.get("stop_on_shutdown", False)),
+            gripper_config=robot_config.get("gripper"),
         )
     else:
         raise ValueError(f"unsupported robot backend: {robot_backend}")

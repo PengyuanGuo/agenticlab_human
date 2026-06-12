@@ -20,7 +20,7 @@
                 (not (clear ?obj))))
         
 
-    (:action place-on-object
+    (:action place
     :parameters (?obj - object ?target - object)
     :precondition (and (holding ?obj) 
                       (clear ?target))               

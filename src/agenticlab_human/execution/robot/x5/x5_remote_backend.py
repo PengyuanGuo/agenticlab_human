@@ -53,6 +53,8 @@ class RemoteX5ActionBackend:
         execute: bool = False,
         execute_until: PickExecutionStage | None = None,
         place_execute_until: PlaceExecutionStage | None = None,
+        place_approach_offset_x_m: float | None = None,
+        default_place_orientation_rotvec: Sequence[float] | None = None,
         client: Any | None = None,
     ) -> None:
         self.robot_config_path = robot_config_path
@@ -130,7 +132,11 @@ class RemoteX5ActionBackend:
             max_command_speed_ratio,
         )
         self.place_approach_offset_x_m = _finite_float(
-            backend_config.get("place_approach_offset_x_m", -0.05),
+            (
+                place_approach_offset_x_m
+                if place_approach_offset_x_m is not None
+                else backend_config.get("place_approach_offset_x_m", -0.05)
+            ),
             "action_backend.place_approach_offset_x_m",
         )
         max_movel_translation_m = _positive_float(
@@ -142,14 +148,21 @@ class RemoteX5ActionBackend:
                 "absolute action_backend.place_approach_offset_x_m cannot exceed "
                 "robot.max_movel_point_translation_m"
             )
-        configured_home_rotvec = backend_config.get("home_tcp_rotvec")
-        self.configured_home_tcp_rotvec = (
-            _three_finite_floats(
-                configured_home_rotvec,
-                "action_backend.home_tcp_rotvec",
+        configured_place_orientation = (
+            default_place_orientation_rotvec
+            if default_place_orientation_rotvec is not None
+            else backend_config.get("default_place_orientation_rotvec")
+        )
+        if configured_place_orientation is None:
+            raise ValueError(
+                "action_backend.default_place_orientation_rotvec is required"
             )
-            if configured_home_rotvec is not None
-            else None
+        self.default_place_orientation_rotvec = np.asarray(
+            _three_finite_floats(
+                configured_place_orientation,
+                "action_backend.default_place_orientation_rotvec",
+            ),
+            dtype=float,
         )
         self.request_timeout_s = _positive_float(
             backend_config.get("request_timeout_s", 90.0),
@@ -166,6 +179,15 @@ class RemoteX5ActionBackend:
         self.home_joints_deg = _seven_finite_floats(
             home_values,
             f"robot.{self.arm}.home_joints_deg",
+        )
+        check_gripper_values = arm_config.get("check_gripper_joints_deg")
+        if check_gripper_values is None:
+            raise ValueError(
+                f"check_gripper_joints_deg is not configured for X5 arm '{self.arm}'"
+            )
+        self.check_gripper_joints_deg = _seven_finite_floats(
+            check_gripper_values,
+            f"robot.{self.arm}.check_gripper_joints_deg",
         )
         self.joint_limits_deg = _joint_limits(robot_config.get("joint_limits_deg"))
 
@@ -204,6 +226,12 @@ class RemoteX5ActionBackend:
                     raise RuntimeError(
                         f"X5 server robot is not ready: {health.robot.detail}"
                     )
+                open_result = self._client.open_gripper(
+                    wait=True,
+                    request_id=self._request_id("initialize-open-gripper"),
+                )
+                _require_success(open_result, "open gripper during initialize")
+                self._grasp_reached = False
         except Exception:
             if self._owns_client and self._client is not None:
                 self._client.close()
@@ -330,6 +358,14 @@ class RemoteX5ActionBackend:
             )
             _require_success(grasp_result, "movel_point grasp")
             completed_steps.append(_response_summary("grasp", grasp_result))
+
+            failed_step = "close_gripper"
+            close_result = self._client.close_gripper(
+                wait=True,
+                request_id=self._request_id("close-gripper"),
+            )
+            _require_success(close_result, "close gripper")
+            completed_steps.append(_response_summary("close_gripper", close_result))
             self._grasp_reached = True
             metadata["completed_steps"] = completed_steps
             return _pick_motion_success(object_name, "grasp", metadata)
@@ -390,7 +426,7 @@ class RemoteX5ActionBackend:
             return None
         return self._client.get_state(self.arm).state_after.arms[self.arm].tcp_pose_xyzw
 
-    def place_on_object(
+    def place(
         self,
         object_name: str,
         target_name: str,
@@ -398,46 +434,14 @@ class RemoteX5ActionBackend:
         target_pose: Any = None,
     ) -> ActionResult:
         return self._place(
-            "place-on-object",
             object_name,
             target_name,
             target_bbox=target_bbox,
             target_pose=target_pose,
         )
 
-    def place_on_surface(
-        self,
-        object_name: str,
-        surface_name: str,
-        target_bbox: Optional[BBox] = None,
-        target_pose: Any = None,
-    ) -> ActionResult:
-        return self._place(
-            "place-on-surface",
-            object_name,
-            surface_name,
-            target_bbox=target_bbox,
-            target_pose=target_pose,
-        )
-
-    def place_in_container(
-        self,
-        object_name: str,
-        container_name: str,
-        target_bbox: Optional[BBox] = None,
-        target_pose: Any = None,
-    ) -> ActionResult:
-        return self._place(
-            "place-in-container",
-            object_name,
-            container_name,
-            target_bbox=target_bbox,
-            target_pose=target_pose,
-        )
-
     def _place(
         self,
-        action_name: str,
         object_name: str,
         target_name: str,
         *,
@@ -449,32 +453,23 @@ class RemoteX5ActionBackend:
         except ValueError as exc:
             return ActionResult(
                 success=False,
-                action_name=action_name,
+                action_name="place",
                 error=str(exc),
                 metadata={"object": object_name, "target": target_name},
             )
         if self._last_pick_plan is None:
             return ActionResult(
                 success=False,
-                action_name=action_name,
+                action_name="place",
                 error="X5 place requires a preceding pick plan for grasp retreat.",
                 metadata={"object": object_name, "target": target_name},
             )
 
         retreat_pose = self._last_pick_plan["approach_pose_xyz_rotvec"].copy()
-        home_rotvec = (
-            self._last_home_pose_xyz_rotvec[3:]
-            if self._last_home_pose_xyz_rotvec is not None
-            else self.configured_home_tcp_rotvec
-        )
-        plan = (
-            build_world_tcp_place_poses(
-                target_xyz,
-                home_rotvec,
-                approach_offset_x_m=self.place_approach_offset_x_m,
-            )
-            if home_rotvec is not None
-            else None
+        plan = build_world_tcp_place_poses(
+            target_xyz,
+            self.default_place_orientation_rotvec,
+            approach_offset_x_m=self.place_approach_offset_x_m,
         )
         metadata: dict[str, Any] = {
             "object": object_name,
@@ -486,26 +481,18 @@ class RemoteX5ActionBackend:
             "target_has_bbox": target_bbox is not None,
             "target_pose_xyz": target_xyz,
             "target_orientation_ignored": True,
+            "default_place_orientation_rotvec": (
+                self.default_place_orientation_rotvec
+            ),
             "place_approach_offset_x_m": self.place_approach_offset_x_m,
             "retreat_pose_xyz_rotvec": retreat_pose,
+            **plan,
         }
-        if plan is not None:
-            metadata.update(plan)
 
         if not self.execute:
-            if plan is None:
-                return ActionResult(
-                    success=False,
-                    action_name=action_name,
-                    error=(
-                        "Dry-run place requires action_backend.home_tcp_rotvec "
-                        "because the runtime home TCP state is unavailable."
-                    ),
-                    metadata=metadata,
-                )
             return ActionResult(
                 success=True,
-                action_name=action_name,
+                action_name="place",
                 message=(
                     f"X5 dry-run place trajectory generated for {object_name} "
                     f"to {target_name}."
@@ -515,20 +502,20 @@ class RemoteX5ActionBackend:
         if not self._initialized or self._client is None:
             return ActionResult(
                 success=False,
-                action_name=action_name,
+                action_name="place",
                 error="RemoteX5ActionBackend is not initialized.",
                 metadata=metadata,
             )
         if not self._grasp_reached:
             return ActionResult(
                 success=False,
-                action_name=action_name,
+                action_name="place",
                 error="X5 place requires pick execution to complete through grasp.",
                 metadata=metadata,
             )
 
         completed_steps: list[dict[str, Any]] = []
-        failed_step: PlaceExecutionStage = "retreat"
+        failed_step = "retreat"
         try:
             retreat_result = self._client.movel_point(
                 self.arm,
@@ -542,26 +529,25 @@ class RemoteX5ActionBackend:
             if self.place_execute_until == "retreat":
                 metadata["completed_steps"] = completed_steps
                 return _place_motion_success(
-                    action_name, object_name, target_name, "retreat", metadata
+                    object_name, target_name, "retreat", metadata
                 )
 
-            failed_step = "home"
-            completed_steps.extend(self._move_home_joints(action="place"))
+            failed_step = "check_gripper"
+            completed_steps.extend(self._move_check_gripper_joints(action="place"))
             if self.place_execute_until == "home":
                 metadata["completed_steps"] = completed_steps
                 return _place_motion_success(
-                    action_name, object_name, target_name, "home", metadata
+                    object_name, target_name, "home", metadata
                 )
 
-            if self._last_home_pose_xyz_rotvec is None:
-                raise RuntimeError("home TCP pose was not returned by the X5 server")
             plan = build_world_tcp_place_poses(
                 target_xyz,
-                self._last_home_pose_xyz_rotvec[3:],
+                self.default_place_orientation_rotvec,
                 approach_offset_x_m=self.place_approach_offset_x_m,
             )
             metadata.update(plan)
-            metadata["home_pose_xyz_rotvec"] = self._last_home_pose_xyz_rotvec
+            if self._last_home_pose_xyz_rotvec is not None:
+                metadata["home_pose_xyz_rotvec"] = self._last_home_pose_xyz_rotvec
 
             failed_step = "preplace"
             preplace_result = self._client.movej_point(
@@ -576,7 +562,7 @@ class RemoteX5ActionBackend:
             if self.place_execute_until == "preplace":
                 metadata["completed_steps"] = completed_steps
                 return _place_motion_success(
-                    action_name, object_name, target_name, "preplace", metadata
+                    object_name, target_name, "preplace", metadata
                 )
 
             failed_step = "place"
@@ -589,9 +575,44 @@ class RemoteX5ActionBackend:
             )
             _require_success(place_result, "movel_point place")
             completed_steps.append(_response_summary("place", place_result))
+
+            failed_step = "open_gripper"
+            open_result = self._client.open_gripper(
+                wait=True,
+                request_id=self._request_id("open-gripper", action="place"),
+            )
+            _require_success(open_result, "open gripper")
+            completed_steps.append(_response_summary("open_gripper", open_result))
+            self._grasp_reached = False
+
+            failed_step = "release_retreat"
+            release_retreat_result = self._client.movel_point(
+                self.arm,
+                plan["preplace_pose_xyz_rotvec"].tolist(),
+                speed_ratio=self.retreat_speed_ratio,
+                wait=True,
+                request_id=self._request_id(
+                    "release-retreat",
+                    action="place",
+                ),
+            )
+            _require_success(
+                release_retreat_result,
+                "movel_point release retreat",
+            )
+            completed_steps.append(
+                _response_summary(
+                    "release_retreat",
+                    release_retreat_result,
+                )
+            )
+            self._last_pick_plan = None
+
+            failed_step = "home"
+            completed_steps.extend(self._move_home_joints(action="place"))
             metadata["completed_steps"] = completed_steps
             return _place_motion_success(
-                action_name, object_name, target_name, "place", metadata
+                object_name, target_name, "place", metadata
             )
         except Exception as exc:
             metadata["completed_steps"] = completed_steps
@@ -601,22 +622,47 @@ class RemoteX5ActionBackend:
                 metadata["stop_error"] = stop_error
             return ActionResult(
                 success=False,
-                action_name=action_name,
+                action_name="place",
                 error=f"X5 place failed during {failed_step}: {exc}",
                 metadata=metadata,
             )
 
     def _move_home_joints(self, *, action: str = "pick") -> list[dict[str, Any]]:
+        completed_steps = self._move_joint_target(
+            self.home_joints_deg,
+            step="home",
+            action=action,
+        )
+        return completed_steps
+
+    def _move_check_gripper_joints(
+        self,
+        *,
+        action: str,
+    ) -> list[dict[str, Any]]:
+        return self._move_joint_target(
+            self.check_gripper_joints_deg,
+            step="check_gripper",
+            action=action,
+        )
+
+    def _move_joint_target(
+        self,
+        target_joints_deg: Sequence[float],
+        *,
+        step: str,
+        action: str,
+    ) -> list[dict[str, Any]]:
         state_result = self._client.get_state(self.arm)
-        _require_success(state_result, "get_state before home")
+        _require_success(state_result, f"get_state before {step}")
         start_rad = state_result.state_after.arms[self.arm].joints_rad
         start_deg = [math.degrees(float(value)) for value in start_rad]
-        self._check_home_limits()
+        self._check_joint_target_limits(target_joints_deg, step=step)
         max_delta = max(
             abs(target - current)
             for current, target in zip(
                 start_deg,
-                self.home_joints_deg,
+                target_joints_deg,
                 strict=True,
             )
         )
@@ -628,7 +674,7 @@ class RemoteX5ActionBackend:
                 current + (target - current) * fraction
                 for current, target in zip(
                     start_deg,
-                    self.home_joints_deg,
+                    target_joints_deg,
                     strict=True,
                 )
             ]
@@ -638,32 +684,38 @@ class RemoteX5ActionBackend:
                 speed_ratio=self.home_speed_ratio,
                 wait=True,
                 request_id=self._request_id(
-                    f"home-{step_index:03d}",
+                    f"{step.replace('_', '-')}-{step_index:03d}",
                     action=action,
                 ),
             )
-            _require_success(response, f"home waypoint {step_index}/{step_count}")
-            summary = _response_summary("home", response)
+            _require_success(response, f"{step} waypoint {step_index}/{step_count}")
+            summary = _response_summary(step, response)
             summary["waypoint_index"] = step_index
             summary["waypoint_count"] = step_count
             summary["joints_deg"] = waypoint_deg
             completed_steps.append(summary)
-        final_arm_state = response.state_after.arms[self.arm]
-        self._last_home_pose_xyz_rotvec = tcp_pose_xyzw_to_xyz_rotvec(
-            final_arm_state.tcp_pose_xyzw
-        )
+        if step == "home":
+            final_arm_state = response.state_after.arms[self.arm]
+            self._last_home_pose_xyz_rotvec = tcp_pose_xyzw_to_xyz_rotvec(
+                final_arm_state.tcp_pose_xyzw
+            )
         return completed_steps
 
-    def _check_home_limits(self) -> None:
+    def _check_joint_target_limits(
+        self,
+        target_joints_deg: Sequence[float],
+        *,
+        step: str,
+    ) -> None:
         if self.joint_limits_deg is None:
             return
         for index, (value, (lower, upper)) in enumerate(
-            zip(self.home_joints_deg, self.joint_limits_deg, strict=True),
+            zip(target_joints_deg, self.joint_limits_deg, strict=True),
             start=1,
         ):
             if value < lower or value > upper:
                 raise ValueError(
-                    f"home joint {index} target {value:.3f} deg is outside "
+                    f"{step} joint {index} target {value:.3f} deg is outside "
                     f"configured limit [{lower:.3f}, {upper:.3f}] deg"
                 )
 
@@ -687,44 +739,50 @@ def build_world_tcp_pick_poses(
 ) -> dict[str, np.ndarray]:
     """Convert an AnyGrasp pose into world-frame approach and TCP targets."""
 
-    world_camera = _coerce_se3(T_world_camera, "T_world_camera")
-    camera_grasp = _coerce_se3(T_camera_grasp, "T_camera_grasp")
-    grasp_tcp = _coerce_se3(T_grasp_tcp, "T_grasp_tcp")
+    T_world_camera = _coerce_se3(T_world_camera, "T_world_camera")
+    T_camera_grasp = _coerce_se3(T_camera_grasp, "T_camera_grasp")
+    T_grasp_tcp = _coerce_se3(T_grasp_tcp, "T_grasp_tcp")
     approach_distance = float(approach_distance_m)
     if not math.isfinite(approach_distance) or approach_distance <= 0.0:
         raise ValueError("approach_distance_m must be a positive finite value")
 
-    camera_approach = camera_grasp.copy()
-    camera_approach[:3, 3] = (
-        camera_grasp[:3, 3]
-        + camera_grasp[:3, :3] @ np.array([-approach_distance, 0.0, 0.0])
+    T_camera_approach = T_camera_grasp.copy()
+    T_camera_approach[:3, 3] = (
+        T_camera_grasp[:3, 3]
+        + (
+            T_camera_grasp[:3, :3]
+            @ np.array([-approach_distance, 0.0, 0.0])
+        )
     )
-    world_tcp_grasp = world_camera @ camera_grasp @ grasp_tcp
-    world_tcp_approach = world_camera @ camera_approach @ grasp_tcp
+    T_world_tcp_grasp = T_world_camera @ T_camera_grasp @ T_grasp_tcp
+    T_world_tcp_approach = T_world_camera @ T_camera_approach @ T_grasp_tcp
     return {
-        "T_world_tcp_grasp": world_tcp_grasp,
-        "T_world_tcp_approach": world_tcp_approach,
-        "grasp_pose_xyz_rotvec": se3_to_xyz_rotvec(world_tcp_grasp),
-        "approach_pose_xyz_rotvec": se3_to_xyz_rotvec(world_tcp_approach),
+        "T_world_tcp_grasp": T_world_tcp_grasp,
+        "T_world_tcp_approach": T_world_tcp_approach,
+        "grasp_pose_xyz_rotvec": se3_to_xyz_rotvec(T_world_tcp_grasp),
+        "approach_pose_xyz_rotvec": se3_to_xyz_rotvec(T_world_tcp_approach),
     }
 
 
 def build_world_tcp_place_poses(
     target_pose: Any,
-    home_tcp_rotvec: Any,
+    default_place_orientation_rotvec: Any,
     *,
     approach_offset_x_m: float,
 ) -> dict[str, np.ndarray]:
-    """Build world-frame pre-place and place poses using the home TCP orientation."""
+    """Build world-frame pre-place and place poses with a fixed orientation."""
 
     target_xyz = _target_xyz(target_pose)
-    home_rotvec = np.asarray(
-        _three_finite_floats(home_tcp_rotvec, "home_tcp_rotvec"),
+    place_rotvec = np.asarray(
+        _three_finite_floats(
+            default_place_orientation_rotvec,
+            "default_place_orientation_rotvec",
+        ),
         dtype=float,
     )
     offset_x = _finite_float(approach_offset_x_m, "approach_offset_x_m")
 
-    place_pose = np.concatenate([target_xyz, home_rotvec])
+    place_pose = np.concatenate([target_xyz, place_rotvec])
     preplace_pose = place_pose.copy()
     preplace_pose[0] += offset_x
     return {
@@ -913,30 +971,39 @@ def _pick_motion_success(
     completed_stage: PickExecutionStage,
     metadata: dict[str, Any],
 ) -> ActionResult:
+    suffix = (
+        " and the gripper was closed."
+        if completed_stage == "grasp"
+        else "."
+    )
     return ActionResult(
         success=True,
         action_name="pick",
         message=(
             f"X5 pick trajectory for {object_name} completed through "
-            f"{completed_stage}; gripper actuation is not included yet."
+            f"{completed_stage}{suffix}"
         ),
         metadata=metadata,
     )
 
 
 def _place_motion_success(
-    action_name: str,
     object_name: str,
     target_name: str,
     completed_stage: PlaceExecutionStage,
     metadata: dict[str, Any],
 ) -> ActionResult:
+    suffix = (
+        " and the gripper was opened before returning home."
+        if completed_stage == "place"
+        else "."
+    )
     return ActionResult(
         success=True,
-        action_name=action_name,
+        action_name="place",
         message=(
             f"X5 place trajectory for {object_name} to {target_name} completed "
-            f"through {completed_stage}; gripper release is not included yet."
+            f"through {completed_stage}{suffix}"
         ),
         metadata=metadata,
     )
