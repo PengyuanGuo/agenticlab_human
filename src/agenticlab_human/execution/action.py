@@ -174,6 +174,8 @@ def _build_backend(args: argparse.Namespace) -> ActionBackend:
             execute=args.execute,
         )
     if args.backend == "x5":
+        if not args.execute:
+            raise ValueError("--backend x5 requires --execute")
         from agenticlab_human.execution.robot.x5.x5_remote_backend import (
             RemoteX5ActionBackend,
         )
@@ -184,9 +186,6 @@ def _build_backend(args: argparse.Namespace) -> ActionBackend:
             server_url=args.x5_server_url,
             arm=args.x5_arm,
             camera_name=args.camera_name,
-            execute=args.execute,
-            execute_until=args.x5_execute_until,
-            place_execute_until=args.x5_place_execute_until,
         )
     raise ValueError(f"Unsupported backend: {args.backend}")
 
@@ -231,16 +230,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--x5-arm",
         choices=("left", "right"),
         help="Override action_backend.arm.",
-    )
-    parser.add_argument(
-        "--x5-execute-until",
-        choices=("home", "approach", "grasp"),
-        help="Stop X5 pick validation after the selected stage.",
-    )
-    parser.add_argument(
-        "--x5-place-execute-until",
-        choices=("retreat", "home", "preplace", "place"),
-        help="Stop X5 place validation after the selected stage.",
     )
     parser.add_argument(
         "--skip-prepare",

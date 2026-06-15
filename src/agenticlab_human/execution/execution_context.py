@@ -10,13 +10,19 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Protocol, Sequence, Set, Tuple, runtime_checkable
 
 from agenticlab_human.core.action_sequence import ActionSequence
-from agenticlab_human.execution.action_utils import (
-    assign_grasps_to_objects,
-    extract_interested_objects,
-    extract_pick_objects,
-)
 from agenticlab_human.perception.backend.grasp_backend import GraspBackend, GraspCandidate
 from agenticlab_human.perception.backend.perception_backend import BBox, DetectionResult, PerceptionBackend
+
+
+_OBJECT_ARG_KEYS = {
+    "object",
+    "from",
+    "target",
+    "surface",
+    "location",
+    "container",
+    "to",
+}
 
 
 @runtime_checkable
@@ -72,10 +78,23 @@ class ExecutionContext:
         self.last_prepare_report: Optional[PrepareReport] = None
 
     def prepare_for_sequence(self, action_sequence: ActionSequence) -> PrepareReport:
-        """Capture once, detect all referenced objects, and cache scene grasps."""
+        """Capture once, detect referenced objects, and plan per-object grasps."""
 
-        interested_objects = extract_interested_objects(action_sequence)
-        pick_objects = extract_pick_objects(action_sequence)
+        interested_objects = sorted(
+            {
+                value
+                for action in action_sequence.actions
+                for key, value in action.args.items()
+                if key in _OBJECT_ARG_KEYS and value
+            }
+        )
+        pick_objects = sorted(
+            {
+                action.args["object"]
+                for action in action_sequence.actions
+                if action.name == "pick" and action.args.get("object")
+            }
+        )
 
         if not self.scene_provider:
             report = PrepareReport(
@@ -106,15 +125,17 @@ class ExecutionContext:
         }
         self.stale_objects.clear()
 
+        self.grasps = {name: [] for name in pick_objects}
         if self.grasp_planner:
-            all_grasps = self.grasp_planner.plan_scene(self.rgb, self.depth)
-            self.grasps = assign_grasps_to_objects(
-                all_grasps=all_grasps,
-                bboxes=self.bboxes,
-                object_names=pick_objects,
-            )
-        else:
-            self.grasps = {name: [] for name in pick_objects}
+            for object_name in pick_objects:
+                bbox = self.get_bbox(object_name)
+                if bbox is None:
+                    continue
+                self.grasps[object_name] = self.grasp_planner.plan_for_object(
+                    self.rgb,
+                    self.depth,
+                    bbox,
+                )
 
         report = PrepareReport(
             prepared=True,
@@ -179,6 +200,8 @@ class ExecutionContext:
                 self.depth,
                 bbox,
             )
+        elif self.grasp_planner:
+            self.grasps[object_name] = []
 
         self.stale_objects.discard(object_name)
         self.object_states.setdefault(object_name, {})["stale"] = False

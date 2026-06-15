@@ -10,12 +10,13 @@ from agenticlab_human.execution.robot.x5.contracts import (
     SetGripperCommand,
     StopCommand,
 )
-from agenticlab_human.execution.robot.x5.x5_controller import (
-    RealX5Controller,
-    _euler_xyz_deg_to_quat_xyzw,
-    _rotvec_to_euler_xyz_deg,
-    _rotvec_to_quat_xyzw,
+from agenticlab_human.execution.robot.x5.conversion import (
+    euler_xyz_deg_to_quat_xyzw,
+    rotvec_to_euler_xyz_deg,
+    rotvec_to_quat_xyzw,
 )
+from agenticlab_human.execution.robot.x5.gripper_controller import GripperService
+from agenticlab_human.execution.robot.x5.x5_controller import RealX5Controller
 
 
 class FakeJoint:
@@ -196,7 +197,7 @@ class FakeGripper:
         return self.position
 
 
-def _build_controller(fake_x5, *, gripper=None):
+def _build_controller(fake_x5):
     controller = RealX5Controller(
         {
             "left": {
@@ -211,19 +212,17 @@ def _build_controller(fake_x5, *, gripper=None):
             }
         },
         x5_api=fake_x5,
-        default_speed_ratio=0.05,
         max_command_speed_ratio=0.1,
         max_joint_delta_deg=5.0,
-        gripper_config={
-            "enabled": gripper is not None,
-            "force": 80,
-            "closed_position": 0,
-            "open_position": 1000,
-            "init_timeout_s": 3.0,
-            "move_timeout_s": 2.0,
-            "poll_interval_s": 0.01,
-        },
-        gripper_controller=gripper,
+        joint_limits_deg=[
+            [-170.0, 170.0],
+            [-30.0, 90.0],
+            [-155.0, 155.0],
+            [-30.0, 120.0],
+            [-168.0, 168.0],
+            [-30.0, 100.0],
+            [-170.0, 170.0],
+        ],
     )
     controller.initialize()
     return controller
@@ -264,15 +263,25 @@ def test_real_x5_controller_reads_state_in_public_units():
     assert calls.index("get_tf") < calls.index("set_tfno") < calls.index("get_tfno")
 
 
-def test_real_x5_controller_initializes_and_moves_single_gripper():
-    fake_x5 = FakeX5API()
+def test_gripper_service_initializes_maps_positions_and_reads_state():
     gripper = FakeGripper()
-    controller = _build_controller(fake_x5, gripper=gripper)
+    service = GripperService(
+        {
+            "force": 80,
+            "closed_position": 0,
+            "open_position": 1000,
+            "init_timeout_s": 3.0,
+            "move_timeout_s": 2.0,
+            "poll_interval_s": 0.01,
+        },
+        device=gripper,
+    )
+    service.initialize()
 
-    controller.execute(SetGripperCommand(position=0.0, wait=True))
-    closed_state = controller.get_state().gripper
-    controller.execute(SetGripperCommand(position=1.0, wait=True))
-    open_state = controller.get_state().gripper
+    service.execute(SetGripperCommand(position=0.0, wait=True))
+    closed_state = service.get_state()
+    service.execute(SetGripperCommand(position=1.0, wait=True))
+    open_state = service.get_state()
 
     assert ("init_gripper", 3.0, 0.01) in gripper.calls
     assert ("set_force", 80) in gripper.calls
@@ -283,7 +292,7 @@ def test_real_x5_controller_initializes_and_moves_single_gripper():
     assert ("set_position", 1000) in gripper.calls
     assert open_state.position == 1.0
     assert open_state.raw_position == 1000
-    assert "gripper=ready" in controller.health().detail
+    assert service.health().ready is True
 
 
 def test_real_x5_controller_stop_uses_xapi_stop_abort_sequence():
@@ -409,26 +418,41 @@ def test_real_x5_controller_executes_small_linear_point_move():
     assert ("wait_move_done", 0, 60000) in fake_x5.calls
 
 
-def test_real_x5_controller_rejects_movel_beyond_linear_limit():
+@pytest.mark.parametrize(
+    ("command_type", "motion"),
+    [
+        (MoveJPointCommand, "movj"),
+        (MoveLPointCommand, "movl"),
+    ],
+)
+def test_real_x5_controller_does_not_limit_point_pose_delta(
+    command_type,
+    motion,
+):
     fake_x5 = FakeX5API()
     controller = _build_controller(fake_x5)
 
-    with pytest.raises(ValueError, match=r"movl\(Point\) translation"):
-        controller.execute(
-            MoveLPointCommand(
-                arm="left",
-                tcp_pose_xyz_rotvec=[0.25, 0.2, 0.3, 0.0, 0.0, math.pi / 2.0],
-            )
+    controller.execute(
+        command_type(
+            arm="left",
+            tcp_pose_xyz_rotvec=[1.0, 0.2, 0.3, math.pi, 0.0, 0.0],
         )
+    )
 
-    assert "movl" not in [call[0] for call in fake_x5.calls]
+    point_call = next(
+        call
+        for call in fake_x5.calls
+        if call[0] == motion and isinstance(call[2], FakePoint)
+    )
+    assert point_call[2].pose.x == pytest.approx(1000.0)
+    assert abs(point_call[2].pose.a) == pytest.approx(180.0)
 
 
 def test_rotvec_to_x5_euler_xyz_preserves_nontrivial_orientation():
     rotvec = [0.3, -0.2, 0.4]
-    euler_deg = _rotvec_to_euler_xyz_deg(rotvec)
-    expected_quaternion = _rotvec_to_quat_xyzw(rotvec)
-    actual_quaternion = _euler_xyz_deg_to_quat_xyzw(*euler_deg)
+    euler_deg = rotvec_to_euler_xyz_deg(rotvec)
+    expected_quaternion = rotvec_to_quat_xyzw(rotvec)
+    actual_quaternion = euler_xyz_deg_to_quat_xyzw(*euler_deg)
     dot = abs(
         sum(
             expected * actual

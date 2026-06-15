@@ -747,7 +747,6 @@ manifest 至少记录：
 
 机器人开始运动后：
 
-- 返回 backend 的 `failed_step`；
 - backend 按现有规则发送 X5 stop；
 - 不自动重试物理运动；
 - 保存失败前产生的全部产物；
@@ -759,8 +758,8 @@ manifest 至少记录：
 2. 实现 `execute_pick()` 和 `execute_place()`，跑通闭环。
 3. 将 detector 的公开命名收敛为 `FineTunedYoloDetector`。
 4. 实现 GraspNet adapter 和 place target 几何函数。
-5. 增加 X5 world-X offset、固定 orientation 和 dry-run CLI。
-6. 完成 mock HTTP 测试并分阶段验证真机：
+5. 增加 X5 world-X offset 和固定 orientation。
+6. 完成 mock HTTP 测试并验证真机：
    - capture；
    - detection 和 place point geometry；
    - grasp request；

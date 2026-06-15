@@ -9,7 +9,6 @@ action_backend:
   arm: "left"
   camera_name: "Gemini335"
   approach_distance_m: 0.06
-  home_before_pick: true
   home_speed_ratio: 0.10
   home_max_step_deg: 4.0
   approach_speed_ratio: 0.10
@@ -22,8 +21,6 @@ action_backend:
   # Fixed X5 TCP orientation for all place actions.
   default_place_orientation_rotvec: [1.2172784, 1.2123690, 1.2159012]
   request_timeout_s: 90.0
-  execute_until: "grasp"
-  place_execute_until: "place"
 
 # Real Orbbec camera + real X5 controller for Server PC deployment.
 camera:
@@ -43,13 +40,8 @@ robot:
   remote: false
   enable_servo_on_start: true
   stop_on_shutdown: false
-  default_speed_ratio: 0.05
   max_command_speed_ratio: 0.30
   max_joint_delta_deg: 5.0
-  max_movej_point_translation_m: 0.80
-  max_movej_point_rotation_deg: 180.0
-  max_movel_point_translation_m: 0.10
-  max_movel_point_rotation_deg: 30.0
   move_timeout_ms: 60000
   gripper:
     enabled: true

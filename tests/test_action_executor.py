@@ -29,14 +29,14 @@ class FakeDetector:
 
 
 class FakeGraspPlanner:
-    def plan_scene(self, rgb, depth):
-        return [
-            GraspCandidate(pose="green-grasp", score=0.8, image_xy=(10.0, 10.0)),
-            GraspCandidate(pose="outside-grasp", score=0.7, image_xy=(100.0, 100.0)),
-        ]
-
     def plan_for_object(self, rgb, depth, bbox):
-        return [GraspCandidate(pose=f"refreshed-{bbox.label}", score=1.0, image_xy=bbox.center_xy)]
+        return [
+            GraspCandidate(
+                pose=f"grasp-{bbox.label}",
+                score=1.0,
+                object_name=bbox.label,
+            )
+        ]
 
 
 def test_execution_context_prepares_bbox_and_grasp_cache():
@@ -57,9 +57,11 @@ def test_execution_context_prepares_bbox_and_grasp_cache():
     report = context.prepare_for_sequence(action_sequence)
 
     assert report.prepared is True
+    assert report.interested_objects == ["box-1", "green-cube-1", "table-1"]
+    assert report.pick_objects == ["green-cube-1"]
     assert report.bbox_counts["green-cube-1"] == 1
     assert report.grasp_counts["green-cube-1"] == 1
-    assert context.get_best_grasp("green-cube-1").pose == "green-grasp"
+    assert context.get_best_grasp("green-cube-1").pose == "grasp-green-cube-1"
 
 
 def test_action_executor_dry_run_executes_action_sequence_json():

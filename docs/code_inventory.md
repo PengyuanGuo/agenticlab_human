@@ -9,6 +9,40 @@
 - execution/x5_backend.py: X5 robot execution.
 - execution/flexiv_backend.py: Flexiv execution.
 
+### X5 Client/Server
+- `execution/robot/x5/contracts.py`: FastAPI/Pydantic command models, robot state
+  models, and versioned RGB-D NPZ encoding/decoding.
+- `execution/robot/x5/camera.py`: `RGBDCamera` protocol and the Orbbec adapter
+  that returns aligned RGB, millimeter depth, runtime intrinsics, and frame
+  timestamps.
+- `execution/robot/x5/x5_controller.py`: `X5Controller` protocol and the real
+  xapi controller. Owns tool-frame setup, state conversion, motion dispatch,
+  and server-side motion safety checks.
+- `execution/robot/x5/mock_controller.py`: Deterministic dual-arm mock
+  controller used by HTTP tests.
+- `execution/robot/x5/gripper_controller.py`: Dahuan serial register driver,
+  server-side normalized gripper service, and mock gripper service.
+- `execution/robot/x5/conversion.py`: Shared angle, quaternion, rotation-vector,
+  X5 pose, and SE(3) conversions.
+- `execution/robot/x5/server.py`: FastAPI application, hardware lifecycle,
+  per-device single-thread executors, health/capture/robot endpoints, and YAML
+  config assembly.
+- `execution/robot/x5/client.py`: Synchronous `X5HTTPClient`, RGB-D artifact
+  saving/preview, and low-level robot command helpers.
+- `execution/robot/x5/x5_remote_backend.py`: Planner-facing remote X5 action
+  backend. Converts AnyGrasp poses to world-frame TCP poses and executes the
+  pick/place sequence through `X5HTTPClient`.
+- `configs/robot/x5_config.yaml`: Server hardware, safety limits, tool frame,
+  home/check poses, gripper, and client-side action-backend settings.
+- `configs/execution/x5_pipeline.yaml`: End-to-end X5 execution pipeline,
+  detector, grasp, and placement settings.
+- `tests/test_x5_http.py`: In-process mock tests for HTTP health, RGB-D
+  round-trip, robot/gripper commands, validation, and saved capture artifacts.
+- `tests/test_x5_controller.py`: xapi boundary tests for public-unit state,
+  tool/point conversion, safety limits, stop ordering, and gripper mapping.
+- `tests/test_x5_remote_backend.py`: Pick/place transform, trajectory ordering,
+  home segmentation, gripper, and failure-stop tests.
+
 ## Perception
 - perception/yolo_detector.py: Object bbox detection.
 - grasp/graspnet_client.py: HTTP client to AnyGrasp/GraspNet service.
@@ -18,7 +52,7 @@
 - old_demo_xxx.py: One-off test.
 
 
-#  The rest of the content is borrowed from Tiptop/Claude.md, not processed yet.
+#  The rest of the content is borrowed from Tiptop/Claude.md, do not processed yet.
 
 ## Coding Style and Principles
 
@@ -80,4 +114,3 @@ When working on documentation:
 - API documentation will be auto-generated from docstrings once source code is added
 
 ## Key Concepts
-

@@ -1,16 +1,96 @@
+import threading
+import time
+
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
-from agenticlab_human.execution.robot.x5.camera import MockRGBDCamera, OrbbecRGBDCamera
+from agenticlab_human.execution.robot.x5.camera import OrbbecRGBDCamera
 from agenticlab_human.execution.robot.x5.client import (
     X5HTTPClient,
     save_rgbd_frame,
     tcp_pose_xyzw_to_xyz_rotvec,
 )
-from agenticlab_human.execution.robot.x5.contracts import CameraIntrinsics
+from agenticlab_human.execution.robot.x5.contracts import (
+    CameraIntrinsics,
+    ComponentHealth,
+    RGBDFrame,
+)
+from agenticlab_human.execution.robot.x5.mock_controller import MockX5Controller
 from agenticlab_human.execution.robot.x5.server import create_app
-from agenticlab_human.execution.robot.x5.x5_controller import MockX5Controller
+
+
+class MockRGBDCamera:
+    """Deterministic RGB-D source used only by HTTP transport tests."""
+
+    def __init__(
+        self,
+        width: int = 320,
+        height: int = 240,
+        depth_mm: float = 800.0,
+    ) -> None:
+        self.width = int(width)
+        self.height = int(height)
+        self.base_depth_mm = float(depth_mm)
+        self._initialized = False
+        self._frame_index = 0
+        self._lock = threading.Lock()
+
+    def initialize(self) -> None:
+        with self._lock:
+            self._initialized = True
+
+    def capture(self) -> RGBDFrame:
+        with self._lock:
+            if not self._initialized:
+                raise RuntimeError("mock camera is not initialized")
+            self._frame_index += 1
+            frame_index = self._frame_index
+
+        x = np.linspace(0, 255, self.width, dtype=np.uint8)
+        y = np.linspace(0, 255, self.height, dtype=np.uint8)
+        x_grid = np.broadcast_to(x, (self.height, self.width))
+        y_grid = np.broadcast_to(y[:, None], (self.height, self.width))
+        rgb = np.stack(
+            [x_grid, y_grid, np.full_like(x_grid, frame_index % 256)],
+            axis=-1,
+        )
+        depth = np.broadcast_to(
+            np.linspace(0.0, 100.0, self.width, dtype=np.float32),
+            (self.height, self.width),
+        ).copy()
+        depth += np.float32(self.base_depth_mm + frame_index)
+
+        timestamp_ns = time.time_ns()
+        return RGBDFrame(
+            rgb=rgb,
+            depth_mm=depth,
+            intrinsics=CameraIntrinsics(
+                fx=float(self.width),
+                fy=float(self.width),
+                cx=(self.width - 1) / 2.0,
+                cy=(self.height - 1) / 2.0,
+                width=self.width,
+                height=self.height,
+            ),
+            timestamp_ns=timestamp_ns,
+            frame_id=f"mock-{frame_index:06d}",
+            color_timestamp_ns=timestamp_ns,
+            depth_timestamp_ns=timestamp_ns,
+        )
+
+    def health(self) -> ComponentHealth:
+        with self._lock:
+            initialized = self._initialized
+        return ComponentHealth(
+            ready=initialized,
+            backend="mock",
+            detail="ready" if initialized else "not initialized",
+        )
+
+    def shutdown(self) -> None:
+        with self._lock:
+            self._initialized = False
 
 
 def _build_app():

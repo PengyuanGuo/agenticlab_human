@@ -11,7 +11,7 @@ if TYPE_CHECKING:
 
 @dataclass
 class GraspCandidate:
-    """A grasp pose candidate with optional image projection for bbox assignment."""
+    """A grasp pose candidate for an object."""
 
     pose: Any
     score: Optional[float] = None
@@ -22,20 +22,14 @@ class GraspCandidate:
 
 @runtime_checkable
 class GraspBackend(Protocol):
-    """Plan grasp candidates from scene RGB-D data."""
-
-    def plan_scene(self, rgb: Any, depth: Any) -> List[GraspCandidate]:
-        """Run full-scene grasp inference once."""
+    """Plan grasp candidates for one detected object."""
 
     def plan_for_object(self, rgb: Any, depth: Any, bbox: BBox) -> List[GraspCandidate]:
-        """Optional object-level fallback when the full-scene cache is missing."""
+        """Plan grasp candidates inside the object's bounding box."""
 
 
 class EmptyGraspBackend:
     """Grasp planner stub for dry-run execution and tests."""
-
-    def plan_scene(self, rgb: Any, depth: Any) -> List[GraspCandidate]:
-        return []
 
     def plan_for_object(self, rgb: Any, depth: Any, bbox: BBox) -> List[GraspCandidate]:
         return []

@@ -1,200 +1,331 @@
-#!/usr/bin/env python
-# -*- coding:utf-8 -*-
+"""Dahuan gripper device adapter and server-side gripper services."""
 
+from __future__ import annotations
+
+import threading
 import time
-import serial
+from collections.abc import Mapping
+from typing import Any, Protocol, runtime_checkable
+
+from agenticlab_human.execution.robot.x5.contracts import (
+    ComponentHealth,
+    GripperState,
+    SetGripperCommand,
+)
+
 
 class GripperController:
-    """
-    大寰机器人 AG 系列手爪 Modbus-RTU 控制类
-    适用型号：AG-160-95, AG-105-145 等
-    """
-    def __init__(self, port: str = "COM11", baudrate: int = 115200, gripper_id: int = 1):
-        """
-        初始化串口连接
-        :param port: 串口号 (如 "COM11" 或 "/dev/ttyUSB0")
-        :param baudrate: 波特率 (默认 115200)
-        :param gripper_id: 设备 ID (默认 1)
-        """
+    """Low-level Modbus-RTU adapter for one Dahuan AG-series gripper."""
+
+    def __init__(
+        self,
+        port: str = "COM11",
+        baudrate: int = 115200,
+        gripper_id: int = 1,
+    ) -> None:
+        try:
+            import serial
+        except ImportError as exc:
+            raise RuntimeError(
+                "pyserial is required for the real X5 gripper"
+            ) from exc
         self.ser = serial.Serial(port, baudrate, timeout=0.5)
-        self.gripper_id = gripper_id
+        self.gripper_id = int(gripper_id)
 
-    def _calculate_crc(self, data):
-        """计算 Modbus CRC16 校验码"""
+    @staticmethod
+    def _calculate_crc(data: bytes | bytearray) -> bytes:
         crc = 0xFFFF
-        for pos in data:
-            crc ^= pos
-            for i in range(8):
-                if (crc & 1) != 0:
-                    crc >>= 1
-                    crc ^= 0xA001
-                else:
-                    crc >>= 1
-        return crc.to_bytes(2, 'little')
+        for value in data:
+            crc ^= value
+            for _ in range(8):
+                crc = (crc >> 1) ^ 0xA001 if crc & 1 else crc >> 1
+        return crc.to_bytes(2, "little")
 
-    def _send_command(self, func_code, register_addr, value):
-        """
-        发送写指令 (功能码 0x06)
-        """
+    def _send_command(self, func_code: int, register_addr: int, value: int) -> bytes:
         data = bytearray([self.gripper_id, func_code])
-        data.extend(register_addr.to_bytes(2, 'big'))
-        data.extend(value.to_bytes(2, 'big'))
+        data.extend(register_addr.to_bytes(2, "big"))
+        data.extend(value.to_bytes(2, "big"))
         data.extend(self._calculate_crc(data))
-        
         self.ser.write(data)
-        response = self.ser.read(8) # 0x06 返回 8 字节
-        return response
+        return self.ser.read(8)
 
-    def _read_registers(self, register_addr, count):
-        """
-        发送读指令 (功能码 0x03)
-        """
+    def _read_registers(self, register_addr: int, count: int) -> bytes:
         data = bytearray([self.gripper_id, 0x03])
-        data.extend(register_addr.to_bytes(2, 'big'))
-        data.extend(count.to_bytes(2, 'big'))
+        data.extend(register_addr.to_bytes(2, "big"))
+        data.extend(count.to_bytes(2, "big"))
         data.extend(self._calculate_crc(data))
-        
         self.ser.write(data)
-        response = self.ser.read(5 + 2 * count) # 0x03 返回 5 + 2*N 字节
-        return response
+        return self.ser.read(5 + 2 * count)
 
-    def init_gripper(self, timeout_s: float = 10.0, poll_interval_s: float = 0.5):
-        """
-        初始化夹爪。在断电或异常后需要先调用此接口。
-        寄存器：0x0100
-        """
-        print(f"正在初始化夹爪 ID: {self.gripper_id}...")
+    def init_gripper(
+        self,
+        timeout_s: float = 10.0,
+        poll_interval_s: float = 0.5,
+    ) -> None:
+        """Initialize the gripper after power-on or a device fault."""
+
         self._send_command(0x06, 0x0100, 1)
         deadline = time.monotonic() + float(timeout_s)
-        while True:
-            if self.get_init_status() == 1:
-                print("夹爪初始化成功")
-                break
+        while self.get_init_status() != 1:
             if time.monotonic() >= deadline:
-                raise TimeoutError(f"夹爪初始化超时: {timeout_s:.1f}s")
+                raise TimeoutError(
+                    f"gripper initialization timed out after {timeout_s:.1f}s"
+                )
             time.sleep(float(poll_interval_s))
 
-    def set_force(self, force):
-        """
-        设置夹持力值
-        :param force: 力值百分比 (20 - 100)
-        寄存器：0x0101
-        """
-        if not (20 <= force <= 100):
-            print("警告: 力值范围应在 20-100 之间")
-            force = max(20, min(100, force))
-        self._send_command(0x06, 0x0101, force)
+    def set_force(self, force: int) -> None:
+        self._send_command(0x06, 0x0101, max(20, min(100, int(force))))
 
-    def set_position(self, position):
-        """
-        设置目标位置
-        :param position: 目标位置 (0 - 1000)。0 为完全闭合，1000 为完全打开。
-        寄存器：0x0103
-        """
-        if not (0 <= position <= 1000):
-            print("警告: 位置范围应在 0-1000 之间")
-            position = max(0, min(1000, position))
-        self._send_command(0x06, 0x0103, position)
+    def set_position(self, position: int) -> None:
+        self._send_command(0x06, 0x0103, max(0, min(1000, int(position))))
 
-    def get_init_status(self):
-        """
-        获取初始化状态
-        :return: 0: 未初始化, 1: 已初始化
-        寄存器：0x0200
-        """
-        res = self._read_registers(0x0200, 1)
-        if len(res) >= 5:
-            return int.from_bytes(res[3:5], 'big')
-        return None
+    def get_init_status(self) -> int | None:
+        return self._read_register(0x0200)
 
-    def get_grip_status(self):
-        """
-        获取夹持状态反馈
-        :return: 
-            0: 夹爪正在运动中
-            1: 夹爪已运动至目标位置，未夹持到物体
-            2: 夹爪已夹持到物体
-            3: 夹爪在夹持物体后发生掉落
-        寄存器：0x0201
-        """
-        res = self._read_registers(0x0201, 1)
-        if len(res) >= 5:
-            return int.from_bytes(res[3:5], 'big')
-        return None
+    def get_grip_status(self) -> int | None:
+        return self._read_register(0x0201)
 
-    def get_current_position(self):
-        """
-        获取当前位置反馈
-        :return: 0 - 1000 (0 为闭合，1000 为打开)
-        寄存器：0x0202
-        """
-        res = self._read_registers(0x0202, 1)
-        if len(res) >= 5:
-            return int.from_bytes(res[3:5], 'big')
-        return None
+    def get_current_position(self) -> int | None:
+        return self._read_register(0x0202)
 
-    def close(self):
-        """关闭串口连接"""
+    def close(self) -> None:
         self.ser.close()
 
-if __name__ == "__main__":
-    # 示例代码
-    left_hand = GripperController(port="COM6", baudrate=115200, gripper_id=1)
-    # right_hand = GripperController(port="COM8", baudrate=115200, gripper_id=1)
-    
-    # 1. 初始化
-    if left_hand.get_init_status() != 1:
-        left_hand.init_gripper()
-    
-    # if right_hand.get_init_status() != 1:
-    #     right_hand.init_gripper()
-    # 2. 设置力值 (50%)
-    left_hand.set_force(100)
-    # right_hand.set_force(70)
+    def _read_register(self, address: int) -> int | None:
+        response = self._read_registers(address, 1)
+        if len(response) < 5:
+            return None
+        return int.from_bytes(response[3:5], "big")
 
-    # 3. 闭合夹爪 (位置 0)
-    print("正在闭合夹爪...")
-    # right_hand.set_position(1000)
-    left_hand.set_position(1000)
 
-    # 4. 轮询状态直到停止运动
-    while True:
-        status = left_hand.get_grip_status()
-        pos = left_hand.get_current_position()
-        if status == 0:
-            print(f"运动中... 当前位置: {pos}")
-        elif status == 1:
-            print(f"已到达目标位置 (未夹到物体), 位置: {pos}")
-            break
-        elif status == 2:
-            print(f"已夹到物体, 位置: {pos}")
-            break
-        elif status == 3:
-            print("报警: 物体掉落！")
-            break
-        time.sleep(0.2)
+class GripperDevice(Protocol):
+    def get_init_status(self) -> int | None: ...
 
-    # 3. 闭合夹爪 (位置 0)
-    print("正在闭合夹爪...")
-    left_hand.set_position(0)
-    # right_hand.set_position(0)
+    def init_gripper(
+        self,
+        *,
+        timeout_s: float,
+        poll_interval_s: float,
+    ) -> None: ...
 
-    # 4. 轮询状态直到停止运动
-    while True:
-        status = left_hand.get_grip_status()
-        pos = left_hand.get_current_position()
-        if status == 0:
-            print(f"运动中... 当前位置: {pos}")
-        elif status == 1:
-            print(f"已到达目标位置 (未夹到物体), 位置: {pos}")
-            break
-        elif status == 2:
-            print(f"已夹到物体, 位置: {pos}")
-            break
-        elif status == 3:
-            print("报警: 物体掉落！")
-            break
-        time.sleep(0.2)
+    def set_force(self, force: int) -> None: ...
 
-    left_hand.close()
-    # right_hand.close()
+    def set_position(self, position: int) -> None: ...
+
+    def get_grip_status(self) -> int | None: ...
+
+    def get_current_position(self) -> int | None: ...
+
+    def close(self) -> None: ...
+
+
+@runtime_checkable
+class X5Gripper(Protocol):
+    def initialize(self) -> None: ...
+
+    def execute(self, command: SetGripperCommand) -> None: ...
+
+    def get_state(self) -> GripperState: ...
+
+    def health(self) -> ComponentHealth: ...
+
+    def shutdown(self) -> None: ...
+
+
+class GripperService:
+    """Own the real gripper lifecycle, normalized command mapping, and state."""
+
+    def __init__(
+        self,
+        config: Mapping[str, Any],
+        *,
+        device: GripperDevice | None = None,
+    ) -> None:
+        self._config = dict(config)
+        self._device = device
+        self._owns_device = device is None
+        self._force = int(self._config.get("force", 100))
+        self._closed_position = int(self._config.get("closed_position", 0))
+        self._open_position = int(self._config.get("open_position", 1000))
+        self._init_timeout_s = float(self._config.get("init_timeout_s", 10.0))
+        self._move_timeout_s = float(self._config.get("move_timeout_s", 5.0))
+        self._poll_interval_s = float(self._config.get("poll_interval_s", 0.1))
+        self._initialized = False
+        self._last_error = ""
+        self._lock = threading.RLock()
+        self._validate_config()
+
+    def initialize(self) -> None:
+        with self._lock:
+            if self._initialized:
+                return
+            try:
+                if self._device is None:
+                    port = self._config.get("port")
+                    if not port:
+                        raise ValueError("robot.gripper.port is required")
+                    self._device = GripperController(
+                        port=str(port),
+                        baudrate=int(self._config.get("baudrate", 115200)),
+                        gripper_id=int(self._config.get("gripper_id", 1)),
+                    )
+                if self._device.get_init_status() != 1:
+                    self._device.init_gripper(
+                        timeout_s=self._init_timeout_s,
+                        poll_interval_s=self._poll_interval_s,
+                    )
+                self._device.set_force(self._force)
+                self._initialized = True
+                self._last_error = ""
+            except Exception as exc:
+                self._last_error = str(exc)
+                self._close_owned_device()
+                raise
+
+    def execute(self, command: SetGripperCommand) -> None:
+        with self._lock:
+            device = self._require_device()
+            device.set_position(self._raw_position(command.position))
+            if not command.wait:
+                return
+
+            deadline = time.monotonic() + self._move_timeout_s
+            while True:
+                status = device.get_grip_status()
+                if status in (1, 2):
+                    return
+                if status == 3:
+                    raise RuntimeError("gripper reported object-drop status")
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(
+                        f"gripper movement timed out after "
+                        f"{self._move_timeout_s:.1f}s"
+                    )
+                time.sleep(self._poll_interval_s)
+
+    def get_state(self) -> GripperState:
+        with self._lock:
+            if not self._initialized or self._device is None:
+                return GripperState(connected=False, moving=False)
+            status = self._device.get_grip_status()
+            raw_position = self._device.get_current_position()
+            return GripperState(
+                connected=True,
+                moving=status == 0,
+                position=(
+                    self._normalized_position(raw_position)
+                    if raw_position is not None
+                    else None
+                ),
+                raw_position=raw_position,
+                grip_status=status,
+            )
+
+    def health(self) -> ComponentHealth:
+        with self._lock:
+            ready = self._initialized and self._device is not None
+            detail = "ready" if ready else self._last_error or "not initialized"
+        return ComponentHealth(
+            ready=ready,
+            backend="dahuan-modbus",
+            detail=detail,
+        )
+
+    def shutdown(self) -> None:
+        with self._lock:
+            self._initialized = False
+            self._close_owned_device()
+
+    def _validate_config(self) -> None:
+        if not 20 <= self._force <= 100:
+            raise ValueError("gripper.force must be in [20, 100]")
+        for name, value in (
+            ("closed_position", self._closed_position),
+            ("open_position", self._open_position),
+        ):
+            if not 0 <= value <= 1000:
+                raise ValueError(f"gripper.{name} must be in [0, 1000]")
+        if self._closed_position == self._open_position:
+            raise ValueError(
+                "gripper.closed_position and gripper.open_position must differ"
+            )
+        for name, value in (
+            ("init_timeout_s", self._init_timeout_s),
+            ("move_timeout_s", self._move_timeout_s),
+            ("poll_interval_s", self._poll_interval_s),
+        ):
+            if value <= 0.0:
+                raise ValueError(f"gripper.{name} must be positive")
+
+    def _require_device(self) -> GripperDevice:
+        if not self._initialized or self._device is None:
+            raise RuntimeError("single gripper is not initialized")
+        return self._device
+
+    def _raw_position(self, normalized_position: float) -> int:
+        return int(
+            round(
+                self._closed_position
+                + float(normalized_position)
+                * (self._open_position - self._closed_position)
+            )
+        )
+
+    def _normalized_position(self, raw_position: int) -> float:
+        span = self._open_position - self._closed_position
+        normalized = (int(raw_position) - self._closed_position) / span
+        return min(1.0, max(0.0, float(normalized)))
+
+    def _close_owned_device(self) -> None:
+        if self._device is not None and self._owns_device:
+            try:
+                self._device.close()
+            finally:
+                self._device = None
+
+
+class MockGripperService:
+    """In-memory single-gripper service for server tests."""
+
+    def __init__(self) -> None:
+        self._initialized = False
+        self._state = GripperState(
+            connected=False,
+            moving=False,
+            position=1.0,
+            raw_position=1000,
+            grip_status=1,
+        )
+        self._lock = threading.Lock()
+
+    def initialize(self) -> None:
+        with self._lock:
+            self._initialized = True
+            self._state.connected = True
+
+    def execute(self, command: SetGripperCommand) -> None:
+        with self._lock:
+            if not self._initialized:
+                raise RuntimeError("mock gripper is not initialized")
+            self._state.position = float(command.position)
+            self._state.raw_position = int(round(command.position * 1000.0))
+            self._state.grip_status = 1
+
+    def get_state(self) -> GripperState:
+        with self._lock:
+            return self._state.model_copy(deep=True)
+
+    def health(self) -> ComponentHealth:
+        with self._lock:
+            ready = self._initialized
+        return ComponentHealth(
+            ready=ready,
+            backend="mock",
+            detail="ready" if ready else "not initialized",
+        )
+
+    def shutdown(self) -> None:
+        with self._lock:
+            self._initialized = False
+            self._state.connected = False
+            self._state.moving = False

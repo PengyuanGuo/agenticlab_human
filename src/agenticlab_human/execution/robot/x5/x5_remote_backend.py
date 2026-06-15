@@ -1,21 +1,22 @@
-"""AgenticLab ActionBackend for executing pick trajectories through X5 HTTP."""
+"""Production X5 pick-and-place backend over HTTP."""
 
 from __future__ import annotations
 
-import argparse
-import json
 import math
-import uuid
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, Optional, Sequence
+from typing import Any, Optional, Sequence
 
 import numpy as np
 import yaml
 
 from agenticlab_human.execution.action_backend import ActionResult
-from agenticlab_human.execution.robot.x5.client import (
-    X5HTTPClient,
-    tcp_pose_xyzw_to_xyz_rotvec,
+from agenticlab_human.execution.robot.x5.client import X5HTTPClient
+from agenticlab_human.execution.robot.x5.conversion import (
+    coerce_se3,
+    degrees_to_radians,
+    radians_to_degrees,
+    se3_to_xyz_rotvec,
 )
 from agenticlab_human.perception.backend.grasp_backend import GraspCandidate
 from agenticlab_human.perception.backend.perception_backend import BBox
@@ -23,9 +24,6 @@ from agenticlab_human.perception.backend.perception_backend import BBox
 
 DEFAULT_ROBOT_CONFIG = "configs/robot/x5_config.yaml"
 DEFAULT_CAMERA_CONFIG = "configs/perception/camera_config.yaml"
-PickExecutionStage = Literal["home", "approach", "grasp"]
-PlaceExecutionStage = Literal["retreat", "home", "preplace", "place"]
-
 
 T_GRASP_EE = np.eye(4, dtype=float)
 T_GRASP_EE[:3, :3] = np.array(
@@ -39,8 +37,29 @@ T_GRASP_EE[:3, :3] = np.array(
 T_GRASP_TCP = T_GRASP_EE.copy()
 
 
+@dataclass(frozen=True)
+class _BackendConfig:
+    server_url: str
+    arm: str
+    camera_name: str
+    request_timeout_s: float
+    approach_distance_m: float
+    home_speed_ratio: float
+    home_max_step_deg: float
+    approach_speed_ratio: float
+    grasp_speed_ratio: float
+    retreat_speed_ratio: float
+    place_approach_speed_ratio: float
+    place_speed_ratio: float
+    place_approach_offset_x_m: float
+    default_place_orientation_rotvec: np.ndarray
+    home_joints_deg: list[float]
+    check_gripper_joints_deg: list[float]
+    T_world_camera: np.ndarray
+
+
 class RemoteX5ActionBackend:
-    """Plan or execute staged X5 pick and place trajectories over HTTP."""
+    """Execute the production X5 pick-and-place motion sequence."""
 
     def __init__(
         self,
@@ -50,198 +69,63 @@ class RemoteX5ActionBackend:
         server_url: str | None = None,
         arm: str | None = None,
         camera_name: str | None = None,
-        execute: bool = False,
-        execute_until: PickExecutionStage | None = None,
-        place_execute_until: PlaceExecutionStage | None = None,
         place_approach_offset_x_m: float | None = None,
         default_place_orientation_rotvec: Sequence[float] | None = None,
         client: Any | None = None,
     ) -> None:
-        self.robot_config_path = robot_config_path
-        self.camera_config_path = camera_config_path
-        self.robot_config = _load_yaml(robot_config_path)
-        self.camera_config = _load_yaml(camera_config_path)
-        backend_config = self.robot_config.get("action_backend", {})
-        robot_config = self.robot_config.get("robot", {})
-
-        self.server_url = str(
-            server_url or backend_config.get("server_url", "http://127.0.0.1:8000")
-        ).rstrip("/")
-        self.arm = str(arm or backend_config.get("arm", "left"))
-        self.camera_name = str(
-            camera_name or backend_config.get("camera_name", "Gemini335")
+        config = _load_backend_config(
+            robot_config_path,
+            camera_config_path,
+            server_url=server_url,
+            arm=arm,
+            camera_name=camera_name,
+            place_approach_offset_x_m=place_approach_offset_x_m,
+            default_place_orientation_rotvec=default_place_orientation_rotvec,
         )
-        self.execute = bool(execute)
-        self.execute_until = _execution_stage(
-            execute_until or backend_config.get("execute_until", "grasp")
+        self.config = config
+        self.server_url = config.server_url
+        self.arm = config.arm
+        self.camera_name = config.camera_name
+        self.T_world_camera = config.T_world_camera
+        self.default_place_orientation_rotvec = (
+            config.default_place_orientation_rotvec
         )
-        self.place_execute_until = _place_execution_stage(
-            place_execute_until
-            or backend_config.get("place_execute_until", "place")
-        )
-        self.approach_distance_m = _positive_float(
-            backend_config.get("approach_distance_m", 0.05),
-            "action_backend.approach_distance_m",
-        )
-        self.home_before_pick = bool(backend_config.get("home_before_pick", True))
-        max_command_speed_ratio = _positive_float(
-            robot_config.get("max_command_speed_ratio", 0.1),
-            "robot.max_command_speed_ratio",
-        )
-        self.home_speed_ratio = _speed_ratio(
-            backend_config.get("home_speed_ratio", 0.05),
-            "action_backend.home_speed_ratio",
-            max_command_speed_ratio,
-        )
-        self.home_max_step_deg = _positive_float(
-            backend_config.get("home_max_step_deg", 4.0),
-            "action_backend.home_max_step_deg",
-        )
-        max_joint_delta_deg = _positive_float(
-            robot_config.get("max_joint_delta_deg", 5.0),
-            "robot.max_joint_delta_deg",
-        )
-        if self.home_max_step_deg > max_joint_delta_deg:
-            raise ValueError(
-                "action_backend.home_max_step_deg cannot exceed "
-                "robot.max_joint_delta_deg"
-            )
-        self.approach_speed_ratio = _speed_ratio(
-            backend_config.get("approach_speed_ratio", 0.03),
-            "action_backend.approach_speed_ratio",
-            max_command_speed_ratio,
-        )
-        self.grasp_speed_ratio = _speed_ratio(
-            backend_config.get("grasp_speed_ratio", 0.02),
-            "action_backend.grasp_speed_ratio",
-            max_command_speed_ratio,
-        )
-        self.retreat_speed_ratio = _speed_ratio(
-            backend_config.get("retreat_speed_ratio", self.grasp_speed_ratio),
-            "action_backend.retreat_speed_ratio",
-            max_command_speed_ratio,
-        )
-        self.place_approach_speed_ratio = _speed_ratio(
-            backend_config.get("place_approach_speed_ratio", 0.03),
-            "action_backend.place_approach_speed_ratio",
-            max_command_speed_ratio,
-        )
-        self.place_speed_ratio = _speed_ratio(
-            backend_config.get("place_speed_ratio", 0.02),
-            "action_backend.place_speed_ratio",
-            max_command_speed_ratio,
-        )
-        self.place_approach_offset_x_m = _finite_float(
-            (
-                place_approach_offset_x_m
-                if place_approach_offset_x_m is not None
-                else backend_config.get("place_approach_offset_x_m", -0.05)
-            ),
-            "action_backend.place_approach_offset_x_m",
-        )
-        max_movel_translation_m = _positive_float(
-            robot_config.get("max_movel_point_translation_m", 0.1),
-            "robot.max_movel_point_translation_m",
-        )
-        if abs(self.place_approach_offset_x_m) > max_movel_translation_m:
-            raise ValueError(
-                "absolute action_backend.place_approach_offset_x_m cannot exceed "
-                "robot.max_movel_point_translation_m"
-            )
-        configured_place_orientation = (
-            default_place_orientation_rotvec
-            if default_place_orientation_rotvec is not None
-            else backend_config.get("default_place_orientation_rotvec")
-        )
-        if configured_place_orientation is None:
-            raise ValueError(
-                "action_backend.default_place_orientation_rotvec is required"
-            )
-        self.default_place_orientation_rotvec = np.asarray(
-            _three_finite_floats(
-                configured_place_orientation,
-                "action_backend.default_place_orientation_rotvec",
-            ),
-            dtype=float,
-        )
-        self.request_timeout_s = _positive_float(
-            backend_config.get("request_timeout_s", 90.0),
-            "action_backend.request_timeout_s",
-        )
-
-        arm_config = robot_config.get(self.arm, {})
-        home_values = arm_config.get(
-            "home_joints_deg",
-            robot_config.get("home_joints_deg"),
-        )
-        if home_values is None:
-            raise ValueError(f"home_joints_deg is not configured for X5 arm '{self.arm}'")
-        self.home_joints_deg = _seven_finite_floats(
-            home_values,
-            f"robot.{self.arm}.home_joints_deg",
-        )
-        check_gripper_values = arm_config.get("check_gripper_joints_deg")
-        if check_gripper_values is None:
-            raise ValueError(
-                f"check_gripper_joints_deg is not configured for X5 arm '{self.arm}'"
-            )
-        self.check_gripper_joints_deg = _seven_finite_floats(
-            check_gripper_values,
-            f"robot.{self.arm}.check_gripper_joints_deg",
-        )
-        self.joint_limits_deg = _joint_limits(robot_config.get("joint_limits_deg"))
-
-        camera_config = self.camera_config.get(self.camera_name)
-        if not camera_config:
-            raise ValueError(f"Camera config not found: {self.camera_name}")
-        handeye = camera_config.get("handeye_calibration", {})
-        self.T_world_camera = np.eye(4, dtype=float)
-        self.T_world_camera[:3, :3] = np.asarray(handeye["rotation"], dtype=float)
-        self.T_world_camera[:3, 3] = np.asarray(handeye["translation"], dtype=float)
-        self.T_world_camera = _coerce_se3(self.T_world_camera, "T_world_camera")
 
         self._client = client
         self._owns_client = client is None
         self._initialized = False
-        self._last_pick_plan: dict[str, np.ndarray] | None = None
-        self._grasp_reached = False
-        self._last_home_pose_xyz_rotvec: list[float] | None = None
-        if self.execute_until == "home" and not self.home_before_pick:
-            raise ValueError(
-                "execute_until='home' requires action_backend.home_before_pick=true"
-            )
+        self._holding_object = False
+        self._retreat_pose: np.ndarray | None = None
 
     def initialize(self) -> None:
         if self._initialized:
             return
+        if self._client is None:
+            self._client = X5HTTPClient(
+                self.server_url,
+                timeout_s=self.config.request_timeout_s,
+            )
         try:
-            if self.execute and self._client is None:
-                self._client = X5HTTPClient(
-                    self.server_url,
-                    timeout_s=self.request_timeout_s,
+            health = self._client.health()
+            if not health.robot.ready:
+                raise RuntimeError(
+                    f"X5 server robot is not ready: {health.robot.detail}"
                 )
-            if self.execute:
-                health = self._client.health()
-                if not health.robot.ready:
-                    raise RuntimeError(
-                        f"X5 server robot is not ready: {health.robot.detail}"
-                    )
-                open_result = self._client.open_gripper(
-                    wait=True,
-                    request_id=self._request_id("initialize-open-gripper"),
-                )
-                _require_success(open_result, "open gripper during initialize")
-                self._grasp_reached = False
+            _require_success(
+                self._client.open_gripper(wait=True),
+                "open gripper during initialize",
+            )
         except Exception:
-            if self._owns_client and self._client is not None:
+            if self._owns_client:
                 self._client.close()
                 self._client = None
             raise
+        self._holding_object = False
         self._initialized = True
 
     def shutdown(self, move_home: bool = False) -> None:
         try:
-            if self.execute and move_home and self._client is not None:
+            if move_home and self._initialized:
                 self.move_home()
         finally:
             if self._owns_client and self._client is not None:
@@ -257,174 +141,67 @@ class RemoteX5ActionBackend:
         object_bbox: Optional[BBox] = None,
         object_pose: Any = None,
     ) -> ActionResult:
+        """home -> approach -> grasp -> close gripper."""
+
+        self._require_initialized()
         grasp = _select_grasp(grasp_candidates)
         if grasp is None:
-            return ActionResult(
-                success=False,
-                action_name="pick",
-                error=f"No grasp candidate available for {object_name}.",
-                metadata={"object": object_name, "from": from_name},
-            )
+            return _failure("pick", f"No grasp candidate available for {object_name}.")
         if grasp.metadata.get("frame") not in (None, "camera"):
-            return ActionResult(
-                success=False,
-                action_name="pick",
-                error=(
-                    "RemoteX5ActionBackend expects grasp poses in the camera frame, "
-                    f"got {grasp.metadata.get('frame')!r}."
-                ),
-                metadata={"object": object_name, "from": from_name},
+            return _failure(
+                "pick",
+                f"X5 expects a camera-frame grasp, got {grasp.metadata.get('frame')!r}.",
             )
 
-        try:
-            plan = build_world_tcp_pick_poses(
-                self.T_world_camera,
-                grasp.pose,
-                approach_distance_m=self.approach_distance_m,
-            )
-        except ValueError as exc:
-            return ActionResult(
-                success=False,
-                action_name="pick",
-                error=str(exc),
-                metadata={"object": object_name, "from": from_name},
-            )
-
-        self._last_pick_plan = {
-            key: np.asarray(value, dtype=float).copy()
-            for key, value in plan.items()
-        }
-        self._grasp_reached = False
-        metadata: dict[str, Any] = {
+        plan = build_world_tcp_pick_poses(
+            self.T_world_camera,
+            grasp.pose,
+            approach_distance_m=self.config.approach_distance_m,
+        )
+        retreat_pose = plan["approach_pose_xyz_rotvec"].copy()
+        completed_steps: list[dict[str, Any]] = []
+        metadata = {
             "object": object_name,
             "from": from_name,
-            "execute": self.execute,
-            "execute_until": self.execute_until,
-            "arm": self.arm,
-            "camera_name": self.camera_name,
-            "server_url": self.server_url,
             "grasp_score": grasp.score,
             "grasp_width": grasp.metadata.get("width"),
-            "object_has_bbox": object_bbox is not None,
-            "object_has_pose": object_pose is not None,
-            "approach_distance_m": self.approach_distance_m,
+            "retreat_pose_xyz_rotvec": retreat_pose,
             **plan,
         }
-        if not self.execute:
-            return ActionResult(
-                success=True,
-                action_name="pick",
-                message=f"X5 dry-run pick trajectory generated for {object_name}.",
-                metadata=metadata,
-            )
-        if not self._initialized or self._client is None:
-            return ActionResult(
-                success=False,
-                action_name="pick",
-                error="RemoteX5ActionBackend is not initialized.",
-                metadata=metadata,
-            )
 
-        completed_steps: list[dict[str, Any]] = []
-        failed_step = "home"
         try:
-            if self.home_before_pick:
-                completed_steps.extend(self._move_home_joints())
-            if self.execute_until == "home":
-                metadata["completed_steps"] = completed_steps
-                return _pick_motion_success(object_name, "home", metadata)
-
-            failed_step = "approach"
-            approach_result = self._client.movej_point(
-                self.arm,
-                plan["approach_pose_xyz_rotvec"].tolist(),
-                speed_ratio=self.approach_speed_ratio,
-                wait=True,
-                request_id=self._request_id("approach"),
+            completed_steps.extend(
+                self._move_joint_target(self.config.home_joints_deg, "home")
             )
-            _require_success(approach_result, "movej_point approach")
-            completed_steps.append(_response_summary("approach", approach_result))
-            if self.execute_until == "approach":
-                metadata["completed_steps"] = completed_steps
-                return _pick_motion_success(object_name, "approach", metadata)
-
-            failed_step = "grasp"
-            grasp_result = self._client.movel_point(
-                self.arm,
-                plan["grasp_pose_xyz_rotvec"].tolist(),
-                speed_ratio=self.grasp_speed_ratio,
-                wait=True,
-                request_id=self._request_id("grasp"),
+            completed_steps.append(
+                self._movej(
+                    plan["approach_pose_xyz_rotvec"],
+                    self.config.approach_speed_ratio,
+                    "approach",
+                )
             )
-            _require_success(grasp_result, "movel_point grasp")
-            completed_steps.append(_response_summary("grasp", grasp_result))
-
-            failed_step = "close_gripper"
-            close_result = self._client.close_gripper(
-                wait=True,
-                request_id=self._request_id("close-gripper"),
+            completed_steps.append(
+                self._movel(
+                    plan["grasp_pose_xyz_rotvec"],
+                    self.config.grasp_speed_ratio,
+                    "grasp",
+                )
             )
-            _require_success(close_result, "close gripper")
-            completed_steps.append(_response_summary("close_gripper", close_result))
-            self._grasp_reached = True
-            metadata["completed_steps"] = completed_steps
-            return _pick_motion_success(object_name, "grasp", metadata)
+            completed_steps.append(self._close_gripper())
         except Exception as exc:
+            self._stop()
             metadata["completed_steps"] = completed_steps
-            metadata["failed_step"] = failed_step
-            stop_error = self._try_stop()
-            if stop_error:
-                metadata["stop_error"] = stop_error
-            return ActionResult(
-                success=False,
-                action_name="pick",
-                error=f"X5 pick failed during {failed_step}: {exc}",
-                metadata=metadata,
-            )
+            return _failure("pick", str(exc), metadata)
 
-    def move_home(self) -> ActionResult:
-        metadata = {
-            "execute": self.execute,
-            "arm": self.arm,
-            "home_joints_deg": self.home_joints_deg,
-        }
-        if not self.execute:
-            return ActionResult(
-                success=True,
-                action_name="move-home",
-                message="X5 dry-run move home.",
-                metadata=metadata,
-            )
-        if not self._initialized or self._client is None:
-            return ActionResult(
-                success=False,
-                action_name="move-home",
-                error="RemoteX5ActionBackend is not initialized.",
-                metadata=metadata,
-            )
-        try:
-            metadata["completed_steps"] = self._move_home_joints()
-            return ActionResult(
-                success=True,
-                action_name="move-home",
-                message=f"X5 {self.arm} arm moved home.",
-                metadata=metadata,
-            )
-        except Exception as exc:
-            stop_error = self._try_stop()
-            if stop_error:
-                metadata["stop_error"] = stop_error
-            return ActionResult(
-                success=False,
-                action_name="move-home",
-                error=f"X5 move home failed: {exc}",
-                metadata=metadata,
-            )
-
-    def get_eef_pose(self) -> Any:
-        if not self.execute or self._client is None:
-            return None
-        return self._client.get_state(self.arm).state_after.arms[self.arm].tcp_pose_xyzw
+        self._retreat_pose = retreat_pose
+        self._holding_object = True
+        metadata["completed_steps"] = completed_steps
+        return ActionResult(
+            success=True,
+            action_name="pick",
+            message=f"X5 picked {object_name} and closed the gripper.",
+            metadata=metadata,
+        )
 
     def place(
         self,
@@ -433,243 +210,123 @@ class RemoteX5ActionBackend:
         target_bbox: Optional[BBox] = None,
         target_pose: Any = None,
     ) -> ActionResult:
-        return self._place(
-            object_name,
-            target_name,
-            target_bbox=target_bbox,
-            target_pose=target_pose,
-        )
+        """retreat -> check gripper -> preplace -> place -> open -> home."""
 
-    def _place(
-        self,
-        object_name: str,
-        target_name: str,
-        *,
-        target_bbox: Optional[BBox],
-        target_pose: Any,
-    ) -> ActionResult:
-        try:
-            target_xyz = _target_xyz(target_pose)
-        except ValueError as exc:
-            return ActionResult(
-                success=False,
-                action_name="place",
-                error=str(exc),
-                metadata={"object": object_name, "target": target_name},
-            )
-        if self._last_pick_plan is None:
-            return ActionResult(
-                success=False,
-                action_name="place",
-                error="X5 place requires a preceding pick plan for grasp retreat.",
-                metadata={"object": object_name, "target": target_name},
-            )
+        self._require_initialized()
+        if not self._holding_object or self._retreat_pose is None:
+            return _failure("place", "X5 place requires a successful preceding pick.")
 
-        retreat_pose = self._last_pick_plan["approach_pose_xyz_rotvec"].copy()
         plan = build_world_tcp_place_poses(
-            target_xyz,
-            self.default_place_orientation_rotvec,
-            approach_offset_x_m=self.place_approach_offset_x_m,
+            target_pose,
+            self.config.default_place_orientation_rotvec,
+            approach_offset_x_m=self.config.place_approach_offset_x_m,
         )
-        metadata: dict[str, Any] = {
+        completed_steps: list[dict[str, Any]] = []
+        metadata = {
             "object": object_name,
             "target": target_name,
-            "execute": self.execute,
-            "execute_until": self.place_execute_until,
-            "arm": self.arm,
-            "server_url": self.server_url,
-            "target_has_bbox": target_bbox is not None,
-            "target_pose_xyz": target_xyz,
-            "target_orientation_ignored": True,
-            "default_place_orientation_rotvec": (
-                self.default_place_orientation_rotvec
-            ),
-            "place_approach_offset_x_m": self.place_approach_offset_x_m,
-            "retreat_pose_xyz_rotvec": retreat_pose,
+            "retreat_pose_xyz_rotvec": self._retreat_pose,
             **plan,
         }
 
-        if not self.execute:
-            return ActionResult(
-                success=True,
-                action_name="place",
-                message=(
-                    f"X5 dry-run place trajectory generated for {object_name} "
-                    f"to {target_name}."
-                ),
-                metadata=metadata,
-            )
-        if not self._initialized or self._client is None:
-            return ActionResult(
-                success=False,
-                action_name="place",
-                error="RemoteX5ActionBackend is not initialized.",
-                metadata=metadata,
-            )
-        if not self._grasp_reached:
-            return ActionResult(
-                success=False,
-                action_name="place",
-                error="X5 place requires pick execution to complete through grasp.",
-                metadata=metadata,
-            )
-
-        completed_steps: list[dict[str, Any]] = []
-        failed_step = "retreat"
         try:
-            retreat_result = self._client.movel_point(
-                self.arm,
-                retreat_pose.tolist(),
-                speed_ratio=self.retreat_speed_ratio,
-                wait=True,
-                request_id=self._request_id("retreat", action="place"),
-            )
-            _require_success(retreat_result, "movel_point grasp retreat")
-            completed_steps.append(_response_summary("retreat", retreat_result))
-            if self.place_execute_until == "retreat":
-                metadata["completed_steps"] = completed_steps
-                return _place_motion_success(
-                    object_name, target_name, "retreat", metadata
+            completed_steps.append(
+                self._movel(
+                    self._retreat_pose,
+                    self.config.retreat_speed_ratio,
+                    "retreat",
                 )
-
-            failed_step = "check_gripper"
-            completed_steps.extend(self._move_check_gripper_joints(action="place"))
-            if self.place_execute_until == "home":
-                metadata["completed_steps"] = completed_steps
-                return _place_motion_success(
-                    object_name, target_name, "home", metadata
+            )
+            completed_steps.extend(
+                self._move_joint_target(
+                    self.config.check_gripper_joints_deg,
+                    "check_gripper",
                 )
-
-            plan = build_world_tcp_place_poses(
-                target_xyz,
-                self.default_place_orientation_rotvec,
-                approach_offset_x_m=self.place_approach_offset_x_m,
-            )
-            metadata.update(plan)
-            if self._last_home_pose_xyz_rotvec is not None:
-                metadata["home_pose_xyz_rotvec"] = self._last_home_pose_xyz_rotvec
-
-            failed_step = "preplace"
-            preplace_result = self._client.movej_point(
-                self.arm,
-                plan["preplace_pose_xyz_rotvec"].tolist(),
-                speed_ratio=self.place_approach_speed_ratio,
-                wait=True,
-                request_id=self._request_id("preplace", action="place"),
-            )
-            _require_success(preplace_result, "movej_point pre-place")
-            completed_steps.append(_response_summary("preplace", preplace_result))
-            if self.place_execute_until == "preplace":
-                metadata["completed_steps"] = completed_steps
-                return _place_motion_success(
-                    object_name, target_name, "preplace", metadata
-                )
-
-            failed_step = "place"
-            place_result = self._client.movel_point(
-                self.arm,
-                plan["place_pose_xyz_rotvec"].tolist(),
-                speed_ratio=self.place_speed_ratio,
-                wait=True,
-                request_id=self._request_id("place", action="place"),
-            )
-            _require_success(place_result, "movel_point place")
-            completed_steps.append(_response_summary("place", place_result))
-
-            failed_step = "open_gripper"
-            open_result = self._client.open_gripper(
-                wait=True,
-                request_id=self._request_id("open-gripper", action="place"),
-            )
-            _require_success(open_result, "open gripper")
-            completed_steps.append(_response_summary("open_gripper", open_result))
-            self._grasp_reached = False
-
-            failed_step = "release_retreat"
-            release_retreat_result = self._client.movel_point(
-                self.arm,
-                plan["preplace_pose_xyz_rotvec"].tolist(),
-                speed_ratio=self.retreat_speed_ratio,
-                wait=True,
-                request_id=self._request_id(
-                    "release-retreat",
-                    action="place",
-                ),
-            )
-            _require_success(
-                release_retreat_result,
-                "movel_point release retreat",
             )
             completed_steps.append(
-                _response_summary(
-                    "release_retreat",
-                    release_retreat_result,
+                self._movej(
+                    plan["preplace_pose_xyz_rotvec"],
+                    self.config.place_approach_speed_ratio,
+                    "preplace",
                 )
             )
-            self._last_pick_plan = None
-
-            failed_step = "home"
-            completed_steps.extend(self._move_home_joints(action="place"))
-            metadata["completed_steps"] = completed_steps
-            return _place_motion_success(
-                object_name, target_name, "place", metadata
+            completed_steps.append(
+                self._movel(
+                    plan["place_pose_xyz_rotvec"],
+                    self.config.place_speed_ratio,
+                    "place",
+                )
+            )
+            completed_steps.append(self._open_gripper())
+            self._holding_object = False
+            completed_steps.extend(
+                self._move_joint_target(self.config.home_joints_deg, "home")
             )
         except Exception as exc:
+            self._stop()
             metadata["completed_steps"] = completed_steps
-            metadata["failed_step"] = failed_step
-            stop_error = self._try_stop()
-            if stop_error:
-                metadata["stop_error"] = stop_error
-            return ActionResult(
-                success=False,
-                action_name="place",
-                error=f"X5 place failed during {failed_step}: {exc}",
-                metadata=metadata,
+            return _failure("place", str(exc), metadata)
+
+        self._retreat_pose = None
+        metadata["completed_steps"] = completed_steps
+        return ActionResult(
+            success=True,
+            action_name="place",
+            message=f"X5 placed {object_name} at {target_name} and returned home.",
+            metadata=metadata,
+        )
+
+    def move_home(self) -> ActionResult:
+        self._require_initialized()
+        try:
+            completed_steps = self._move_joint_target(
+                self.config.home_joints_deg,
+                "home",
             )
-
-    def _move_home_joints(self, *, action: str = "pick") -> list[dict[str, Any]]:
-        completed_steps = self._move_joint_target(
-            self.home_joints_deg,
-            step="home",
-            action=action,
+        except Exception as exc:
+            self._stop()
+            return _failure("move-home", str(exc))
+        return ActionResult(
+            success=True,
+            action_name="move-home",
+            message=f"X5 {self.arm} arm moved home.",
+            metadata={"completed_steps": completed_steps},
         )
-        return completed_steps
 
-    def _move_check_gripper_joints(
-        self,
-        *,
-        action: str,
-    ) -> list[dict[str, Any]]:
-        return self._move_joint_target(
-            self.check_gripper_joints_deg,
-            step="check_gripper",
-            action=action,
-        )
+    def get_eef_pose(self) -> Any:
+        self._require_initialized()
+        response = self._client.get_state(self.arm)
+        _require_success(response, "get X5 state")
+        return response.state_after.arms[self.arm].tcp_pose_xyzw
 
     def _move_joint_target(
         self,
         target_joints_deg: Sequence[float],
-        *,
         step: str,
-        action: str,
     ) -> list[dict[str, Any]]:
-        state_result = self._client.get_state(self.arm)
-        _require_success(state_result, f"get_state before {step}")
-        start_rad = state_result.state_after.arms[self.arm].joints_rad
-        start_deg = [math.degrees(float(value)) for value in start_rad]
-        self._check_joint_target_limits(target_joints_deg, step=step)
-        max_delta = max(
-            abs(target - current)
-            for current, target in zip(
-                start_deg,
-                target_joints_deg,
-                strict=True,
-            )
+        state = self._client.get_state(self.arm)
+        _require_success(state, f"get state before {step}")
+        start_deg = radians_to_degrees(
+            state.state_after.arms[self.arm].joints_rad
         )
-        step_count = max(1, math.ceil(max_delta / self.home_max_step_deg))
-        completed_steps: list[dict[str, Any]] = []
-        for step_index in range(1, step_count + 1):
-            fraction = step_index / step_count
+        step_count = max(
+            1,
+            math.ceil(
+                max(
+                    abs(target - current)
+                    for current, target in zip(
+                        start_deg,
+                        target_joints_deg,
+                        strict=True,
+                    )
+                )
+                / self.config.home_max_step_deg
+            ),
+        )
+
+        completed = []
+        for index in range(1, step_count + 1):
+            fraction = index / step_count
             waypoint_deg = [
                 current + (target - current) * fraction
                 for current, target in zip(
@@ -680,54 +337,69 @@ class RemoteX5ActionBackend:
             ]
             response = self._client.move_joints(
                 self.arm,
-                [math.radians(value) for value in waypoint_deg],
-                speed_ratio=self.home_speed_ratio,
+                degrees_to_radians(waypoint_deg),
+                speed_ratio=self.config.home_speed_ratio,
                 wait=True,
-                request_id=self._request_id(
-                    f"{step.replace('_', '-')}-{step_index:03d}",
-                    action=action,
-                ),
             )
-            _require_success(response, f"{step} waypoint {step_index}/{step_count}")
+            _require_success(response, f"{step} waypoint {index}/{step_count}")
             summary = _response_summary(step, response)
-            summary["waypoint_index"] = step_index
-            summary["waypoint_count"] = step_count
-            summary["joints_deg"] = waypoint_deg
-            completed_steps.append(summary)
-        if step == "home":
-            final_arm_state = response.state_after.arms[self.arm]
-            self._last_home_pose_xyz_rotvec = tcp_pose_xyzw_to_xyz_rotvec(
-                final_arm_state.tcp_pose_xyzw
+            summary.update(
+                waypoint_index=index,
+                waypoint_count=step_count,
+                joints_deg=waypoint_deg,
             )
-        return completed_steps
+            completed.append(summary)
+        return completed
 
-    def _check_joint_target_limits(
+    def _movej(
         self,
-        target_joints_deg: Sequence[float],
-        *,
+        pose: Sequence[float],
+        speed_ratio: float,
         step: str,
-    ) -> None:
-        if self.joint_limits_deg is None:
-            return
-        for index, (value, (lower, upper)) in enumerate(
-            zip(target_joints_deg, self.joint_limits_deg, strict=True),
-            start=1,
-        ):
-            if value < lower or value > upper:
-                raise ValueError(
-                    f"{step} joint {index} target {value:.3f} deg is outside "
-                    f"configured limit [{lower:.3f}, {upper:.3f}] deg"
-                )
+    ) -> dict[str, Any]:
+        response = self._client.movej_point(
+            self.arm,
+            np.asarray(pose, dtype=float).tolist(),
+            speed_ratio=speed_ratio,
+            wait=True,
+        )
+        _require_success(response, f"movej_point {step}")
+        return _response_summary(step, response)
 
-    def _try_stop(self) -> str | None:
+    def _movel(
+        self,
+        pose: Sequence[float],
+        speed_ratio: float,
+        step: str,
+    ) -> dict[str, Any]:
+        response = self._client.movel_point(
+            self.arm,
+            np.asarray(pose, dtype=float).tolist(),
+            speed_ratio=speed_ratio,
+            wait=True,
+        )
+        _require_success(response, f"movel_point {step}")
+        return _response_summary(step, response)
+
+    def _close_gripper(self) -> dict[str, Any]:
+        response = self._client.close_gripper(wait=True)
+        _require_success(response, "close gripper")
+        return _response_summary("close_gripper", response)
+
+    def _open_gripper(self) -> dict[str, Any]:
+        response = self._client.open_gripper(wait=True)
+        _require_success(response, "open gripper")
+        return _response_summary("open_gripper", response)
+
+    def _require_initialized(self) -> None:
+        if not self._initialized or self._client is None:
+            raise RuntimeError("RemoteX5ActionBackend is not initialized")
+
+    def _stop(self) -> None:
         try:
             self._client.stop(self.arm)
-        except Exception as exc:
-            return str(exc)
-        return None
-
-    def _request_id(self, step: str, *, action: str = "pick") -> str:
-        return f"x5-{action}-{step}-{uuid.uuid4().hex[:12]}"
+        except Exception:
+            pass
 
 
 def build_world_tcp_pick_poses(
@@ -737,22 +409,19 @@ def build_world_tcp_pick_poses(
     approach_distance_m: float,
     T_grasp_tcp: Any = T_GRASP_TCP,
 ) -> dict[str, np.ndarray]:
-    """Convert an AnyGrasp pose into world-frame approach and TCP targets."""
+    """Convert a camera-frame grasp into world-frame approach and TCP poses."""
 
-    T_world_camera = _coerce_se3(T_world_camera, "T_world_camera")
-    T_camera_grasp = _coerce_se3(T_camera_grasp, "T_camera_grasp")
-    T_grasp_tcp = _coerce_se3(T_grasp_tcp, "T_grasp_tcp")
+    T_world_camera = coerce_se3(T_world_camera, "T_world_camera")
+    T_camera_grasp = coerce_se3(T_camera_grasp, "T_camera_grasp")
+    T_grasp_tcp = coerce_se3(T_grasp_tcp, "T_grasp_tcp")
     approach_distance = float(approach_distance_m)
-    if not math.isfinite(approach_distance) or approach_distance <= 0.0:
-        raise ValueError("approach_distance_m must be a positive finite value")
+    if approach_distance <= 0.0:
+        raise ValueError("approach_distance_m must be positive")
 
     T_camera_approach = T_camera_grasp.copy()
-    T_camera_approach[:3, 3] = (
-        T_camera_grasp[:3, 3]
-        + (
-            T_camera_grasp[:3, :3]
-            @ np.array([-approach_distance, 0.0, 0.0])
-        )
+    T_camera_approach[:3, 3] += (
+        T_camera_grasp[:3, :3]
+        @ np.array([-approach_distance, 0.0, 0.0])
     )
     T_world_tcp_grasp = T_world_camera @ T_camera_grasp @ T_grasp_tcp
     T_world_tcp_approach = T_world_camera @ T_camera_approach @ T_grasp_tcp
@@ -770,82 +439,115 @@ def build_world_tcp_place_poses(
     *,
     approach_offset_x_m: float,
 ) -> dict[str, np.ndarray]:
-    """Build world-frame pre-place and place poses with a fixed orientation."""
+    """Build world-frame preplace and place poses with fixed orientation."""
 
-    target_xyz = _target_xyz(target_pose)
-    place_rotvec = np.asarray(
-        _three_finite_floats(
-            default_place_orientation_rotvec,
-            "default_place_orientation_rotvec",
-        ),
-        dtype=float,
+    place_pose = np.concatenate(
+        [
+            _target_xyz(target_pose),
+            _vector(
+                default_place_orientation_rotvec,
+                3,
+                "default_place_orientation_rotvec",
+            ),
+        ]
     )
-    offset_x = _finite_float(approach_offset_x_m, "approach_offset_x_m")
-
-    place_pose = np.concatenate([target_xyz, place_rotvec])
     preplace_pose = place_pose.copy()
-    preplace_pose[0] += offset_x
+    preplace_pose[0] += float(approach_offset_x_m)
     return {
         "preplace_pose_xyz_rotvec": preplace_pose,
         "place_pose_xyz_rotvec": place_pose,
     }
 
 
-def se3_to_xyz_rotvec(transform: Any) -> np.ndarray:
-    """Return [x, y, z, rx, ry, rz] in meters and rotation-vector radians."""
+def _load_backend_config(
+    robot_config_path: str,
+    camera_config_path: str,
+    *,
+    server_url: str | None,
+    arm: str | None,
+    camera_name: str | None,
+    place_approach_offset_x_m: float | None,
+    default_place_orientation_rotvec: Sequence[float] | None,
+) -> _BackendConfig:
+    robot_document = _load_yaml(robot_config_path)
+    camera_document = _load_yaml(camera_config_path)
+    motion = robot_document.get("action_backend", {})
+    robot = robot_document["robot"]
 
-    matrix = _coerce_se3(transform, "transform")
-    return np.concatenate(
-        [matrix[:3, 3], _rotation_matrix_to_rotvec(matrix[:3, :3])]
+    arm_name = str(arm or motion.get("arm", "left"))
+    camera_name = str(camera_name or motion.get("camera_name", "Gemini335"))
+    arm_config = robot[arm_name]
+    handeye = camera_document[camera_name]["handeye_calibration"]
+
+    T_world_camera = np.eye(4, dtype=float)
+    T_world_camera[:3, :3] = np.asarray(handeye["rotation"], dtype=float)
+    T_world_camera[:3, 3] = np.asarray(handeye["translation"], dtype=float)
+
+    orientation = (
+        default_place_orientation_rotvec
+        if default_place_orientation_rotvec is not None
+        else motion["default_place_orientation_rotvec"]
+    )
+    place_offset = (
+        place_approach_offset_x_m
+        if place_approach_offset_x_m is not None
+        else motion.get("place_approach_offset_x_m", -0.05)
+    )
+    return _BackendConfig(
+        server_url=str(
+            server_url or motion.get("server_url", "http://127.0.0.1:8000")
+        ).rstrip("/"),
+        arm=arm_name,
+        camera_name=camera_name,
+        request_timeout_s=float(motion.get("request_timeout_s", 90.0)),
+        approach_distance_m=float(motion.get("approach_distance_m", 0.05)),
+        home_speed_ratio=float(motion.get("home_speed_ratio", 0.05)),
+        home_max_step_deg=float(motion.get("home_max_step_deg", 4.0)),
+        approach_speed_ratio=float(motion.get("approach_speed_ratio", 0.03)),
+        grasp_speed_ratio=float(motion.get("grasp_speed_ratio", 0.02)),
+        retreat_speed_ratio=float(motion.get("retreat_speed_ratio", 0.02)),
+        place_approach_speed_ratio=float(
+            motion.get("place_approach_speed_ratio", 0.03)
+        ),
+        place_speed_ratio=float(motion.get("place_speed_ratio", 0.02)),
+        place_approach_offset_x_m=float(place_offset),
+        default_place_orientation_rotvec=_vector(
+            orientation,
+            3,
+            "default_place_orientation_rotvec",
+        ),
+        home_joints_deg=_vector(
+            arm_config["home_joints_deg"],
+            7,
+            f"robot.{arm_name}.home_joints_deg",
+        ).tolist(),
+        check_gripper_joints_deg=_vector(
+            arm_config["check_gripper_joints_deg"],
+            7,
+            f"robot.{arm_name}.check_gripper_joints_deg",
+        ).tolist(),
+        T_world_camera=coerce_se3(T_world_camera, "T_world_camera"),
     )
 
 
-def _coerce_se3(value: Any, name: str) -> np.ndarray:
-    matrix = np.asarray(value, dtype=float)
-    if matrix.shape != (4, 4):
-        raise ValueError(f"{name} must be a 4x4 matrix, got {matrix.shape}")
-    if not np.all(np.isfinite(matrix)):
-        raise ValueError(f"{name} must contain finite values")
-    if not np.allclose(matrix[3], [0.0, 0.0, 0.0, 1.0], atol=1e-8):
-        raise ValueError(f"{name} must be a homogeneous SE3 transform")
-    rotation = matrix[:3, :3]
-    if not np.allclose(rotation.T @ rotation, np.eye(3), atol=1e-5):
-        raise ValueError(f"{name} rotation must be orthonormal")
-    if not math.isclose(float(np.linalg.det(rotation)), 1.0, abs_tol=1e-5):
-        raise ValueError(f"{name} rotation determinant must be +1")
-    return matrix
-
-
-def _rotation_matrix_to_rotvec(rotation: np.ndarray) -> np.ndarray:
-    cos_theta = float(np.clip((np.trace(rotation) - 1.0) / 2.0, -1.0, 1.0))
-    theta = math.acos(cos_theta)
-    if theta < 1e-9:
-        return np.zeros(3, dtype=float)
-    if math.pi - theta < 1e-6:
-        axis = np.sqrt(np.maximum(np.diag(rotation) + 1.0, 0.0) / 2.0)
-        axis[0] = math.copysign(axis[0], rotation[2, 1] - rotation[1, 2])
-        axis[1] = math.copysign(axis[1], rotation[0, 2] - rotation[2, 0])
-        axis[2] = math.copysign(axis[2], rotation[1, 0] - rotation[0, 1])
-        norm = np.linalg.norm(axis)
-        if norm < 1e-9:
-            return np.zeros(3, dtype=float)
-        return axis / norm * theta
-    axis = np.array(
-        [
-            rotation[2, 1] - rotation[1, 2],
-            rotation[0, 2] - rotation[2, 0],
-            rotation[1, 0] - rotation[0, 1],
-        ],
-        dtype=float,
-    ) / (2.0 * math.sin(theta))
-    return axis * theta
-
-
 def _load_yaml(path: str) -> dict[str, Any]:
-    path_obj = Path(path)
-    if not path_obj.exists():
-        raise FileNotFoundError(path)
-    return yaml.safe_load(path_obj.read_text()) or {}
+    return yaml.safe_load(Path(path).read_text()) or {}
+
+
+def _vector(values: Any, size: int, name: str) -> np.ndarray:
+    vector = np.asarray(values, dtype=float)
+    if vector.shape != (size,) or not np.all(np.isfinite(vector)):
+        raise ValueError(f"{name} must contain {size} finite values")
+    return vector
+
+
+def _target_xyz(target_pose: Any) -> np.ndarray:
+    values = np.asarray(target_pose, dtype=float)
+    if values.shape == (4, 4):
+        return _vector(values[:3, 3], 3, "target_pose")
+    if values.ndim == 1 and values.size >= 3:
+        return _vector(values[:3], 3, "target_pose")
+    raise ValueError("target_pose must contain world XYZ or be a 4x4 transform")
 
 
 def _select_grasp(
@@ -859,97 +561,6 @@ def _select_grasp(
             candidate.score if candidate.score is not None else float("-inf")
         ),
     )
-
-
-def _execution_stage(value: Any) -> PickExecutionStage:
-    stage = str(value)
-    if stage not in {"home", "approach", "grasp"}:
-        raise ValueError(
-            "action_backend.execute_until must be one of: home, approach, grasp"
-        )
-    return stage
-
-
-def _place_execution_stage(value: Any) -> PlaceExecutionStage:
-    stage = str(value)
-    if stage not in {"retreat", "home", "preplace", "place"}:
-        raise ValueError(
-            "action_backend.place_execute_until must be one of: "
-            "retreat, home, preplace, place"
-        )
-    return stage
-
-
-def _positive_float(value: Any, name: str) -> float:
-    converted = float(value)
-    if not math.isfinite(converted) or converted <= 0.0:
-        raise ValueError(f"{name} must be a positive finite value")
-    return converted
-
-
-def _finite_float(value: Any, name: str) -> float:
-    converted = float(value)
-    if not math.isfinite(converted):
-        raise ValueError(f"{name} must be a finite value")
-    return converted
-
-
-def _speed_ratio(value: Any, name: str, maximum: float) -> float:
-    converted = _positive_float(value, name)
-    if converted > maximum:
-        raise ValueError(
-            f"{name} {converted:.3f} exceeds robot.max_command_speed_ratio "
-            f"{maximum:.3f}"
-        )
-    return converted
-
-
-def _three_finite_floats(values: Any, name: str) -> list[float]:
-    converted = [float(value) for value in values]
-    if len(converted) != 3:
-        raise ValueError(f"{name} must contain exactly 3 values")
-    if not all(math.isfinite(value) for value in converted):
-        raise ValueError(f"{name} must contain finite values")
-    return converted
-
-
-def _seven_finite_floats(values: Any, name: str) -> list[float]:
-    converted = [float(value) for value in values]
-    if len(converted) < 7:
-        raise ValueError(f"{name} must contain at least 7 values")
-    converted = converted[:7]
-    if not all(math.isfinite(value) for value in converted):
-        raise ValueError(f"{name} must contain finite values")
-    return converted
-
-
-def _joint_limits(values: Any) -> list[tuple[float, float]] | None:
-    if values is None:
-        return None
-    limits = [tuple(float(value) for value in pair) for pair in values]
-    if len(limits) != 7 or any(len(pair) != 2 for pair in limits):
-        raise ValueError("robot.joint_limits_deg must contain 7 [lower, upper] pairs")
-    if any(lower >= upper for lower, upper in limits):
-        raise ValueError("each robot joint lower limit must be less than its upper limit")
-    return limits
-
-
-def _target_xyz(target_pose: Any) -> np.ndarray:
-    if target_pose is None:
-        raise ValueError("X5 place requires a world-frame target_pose")
-    values = np.asarray(target_pose, dtype=float)
-    if values.shape == (4, 4):
-        xyz = values[:3, 3]
-    elif values.ndim == 1 and values.size >= 3:
-        xyz = values[:3]
-    else:
-        raise ValueError(
-            "X5 place target_pose must be a pose vector with at least 3 values "
-            "or a 4x4 world-frame transform"
-        )
-    if not np.all(np.isfinite(xyz)):
-        raise ValueError("X5 place target position must contain finite values")
-    return np.asarray(xyz, dtype=float)
 
 
 def _require_success(response: Any, step: str) -> None:
@@ -966,120 +577,14 @@ def _response_summary(step: str, response: Any) -> dict[str, Any]:
     }
 
 
-def _pick_motion_success(
-    object_name: str,
-    completed_stage: PickExecutionStage,
-    metadata: dict[str, Any],
+def _failure(
+    action_name: str,
+    error: str,
+    metadata: dict[str, Any] | None = None,
 ) -> ActionResult:
-    suffix = (
-        " and the gripper was closed."
-        if completed_stage == "grasp"
-        else "."
-    )
     return ActionResult(
-        success=True,
-        action_name="pick",
-        message=(
-            f"X5 pick trajectory for {object_name} completed through "
-            f"{completed_stage}{suffix}"
-        ),
-        metadata=metadata,
+        success=False,
+        action_name=action_name,
+        error=error,
+        metadata=metadata or {},
     )
-
-
-def _place_motion_success(
-    object_name: str,
-    target_name: str,
-    completed_stage: PlaceExecutionStage,
-    metadata: dict[str, Any],
-) -> ActionResult:
-    suffix = (
-        " and the gripper was opened before returning home."
-        if completed_stage == "place"
-        else "."
-    )
-    return ActionResult(
-        success=True,
-        action_name="place",
-        message=(
-            f"X5 place trajectory for {object_name} to {target_name} completed "
-            f"through {completed_stage}{suffix}"
-        ),
-        metadata=metadata,
-    )
-
-
-def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Plan or execute one X5 home -> approach -> grasp trajectory."
-    )
-    parser.add_argument("--robot-config", default=DEFAULT_ROBOT_CONFIG)
-    parser.add_argument("--camera-config", default=DEFAULT_CAMERA_CONFIG)
-    parser.add_argument("--camera-name")
-    parser.add_argument("--server-url")
-    parser.add_argument("--arm", choices=("left", "right"))
-    parser.add_argument(
-        "--translation",
-        type=float,
-        nargs=3,
-        required=True,
-        metavar=("X", "Y", "Z"),
-        help="AnyGrasp translation in the camera frame, in meters.",
-    )
-    parser.add_argument(
-        "--rotation",
-        type=float,
-        nargs=9,
-        required=True,
-        metavar=("R00", "R01", "R02", "R10", "R11", "R12", "R20", "R21", "R22"),
-        help="AnyGrasp 3x3 rotation matrix in row-major order.",
-    )
-    parser.add_argument("--object-name", default="validation-object")
-    parser.add_argument("--score", type=float, default=1.0)
-    parser.add_argument(
-        "--execute",
-        action="store_true",
-        help="Send commands to the X5 server. Default is planning-only.",
-    )
-    parser.add_argument(
-        "--execute-until",
-        choices=("home", "approach", "grasp"),
-        help="Override action_backend.execute_until for staged validation.",
-    )
-    return parser
-
-
-def main() -> int:
-    args = _build_parser().parse_args()
-    T_camera_grasp = np.eye(4, dtype=float)
-    T_camera_grasp[:3, :3] = np.asarray(args.rotation, dtype=float).reshape(3, 3)
-    T_camera_grasp[:3, 3] = np.asarray(args.translation, dtype=float)
-    grasp = GraspCandidate(
-        pose=T_camera_grasp,
-        score=args.score,
-        object_name=args.object_name,
-        metadata={"frame": "camera", "source": "x5-validation-cli"},
-    )
-    backend = RemoteX5ActionBackend(
-        robot_config_path=args.robot_config,
-        camera_config_path=args.camera_config,
-        server_url=args.server_url,
-        arm=args.arm,
-        camera_name=args.camera_name,
-        execute=args.execute,
-        execute_until=args.execute_until,
-    )
-    backend.initialize()
-    try:
-        result = backend.pick(
-            object_name=args.object_name,
-            grasp_candidates=[grasp],
-        )
-    finally:
-        backend.shutdown()
-    print(json.dumps(result.to_dict(), indent=2, ensure_ascii=False))
-    return 0 if result.success else 1
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

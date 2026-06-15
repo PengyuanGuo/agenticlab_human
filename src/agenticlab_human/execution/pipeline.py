@@ -53,7 +53,6 @@ class ExecutionRuntime:
         run_dir: Path,
         place_depth_patch_px: int,
         place_offset_world_x_m: float,
-        execute: bool,
     ) -> None:
         self.x5_client = x5_client
         self.detector = detector
@@ -62,7 +61,6 @@ class ExecutionRuntime:
         self.run_dir = Path(run_dir)
         self.place_depth_patch_px = int(place_depth_patch_px)
         self.place_offset_world_x_m = float(place_offset_world_x_m)
-        self.execute = bool(execute)
         self.T_world_camera = np.asarray(
             action_backend.T_world_camera,
             dtype=float,
@@ -87,7 +85,7 @@ class ExecutionRuntime:
                 raise RuntimeError(
                     f"X5 camera is not ready: {health.camera.detail}"
                 )
-            if self.execute and not health.robot.ready:
+            if not health.robot.ready:
                 raise RuntimeError(
                     f"X5 robot is not ready: {health.robot.detail}"
                 )
@@ -259,14 +257,12 @@ def execute_pipeline(
     object_name: str,
     target_name: str,
     config_path: str = DEFAULT_PIPELINE_CONFIG,
-    execute: bool = False,
 ) -> ExecutionReport:
     """Execute one explicit pick followed by one explicit place."""
 
     try:
         runtime = create_x5_execution_runtime(
             config_path=config_path,
-            execute=execute,
         )
     except Exception as exc:
         return ExecutionReport(
@@ -275,7 +271,7 @@ def execute_pipeline(
             total_actions=2,
             failed_action_name="pipeline-config",
             error=str(exc),
-            metadata={"execute": execute, "config_path": config_path},
+            metadata={"config_path": config_path},
         )
     results: list[ActionResult] = []
     report: ExecutionReport
@@ -311,7 +307,7 @@ def execute_pipeline(
             results=results,
             failed_action_name="pipeline-initialize",
             error=str(exc),
-            metadata={"execute": execute, "run_dir": str(runtime.run_dir)},
+            metadata={"run_dir": str(runtime.run_dir)},
         )
 
     _write_json(runtime.run_dir / "execution_report.json", report.to_dict())
@@ -321,7 +317,6 @@ def execute_pipeline(
 def create_x5_execution_runtime(
     *,
     config_path: str = DEFAULT_PIPELINE_CONFIG,
-    execute: bool = False,
     x5_client: X5HTTPClient | None = None,
     detector: Any | None = None,
     grasp_backend: Any | None = None,
@@ -343,11 +338,9 @@ def create_x5_execution_runtime(
 
     place_offset = pipeline_config.get("place_offset_world_x_m")
     if place_offset is None:
-        if execute:
-            raise ValueError(
-                "pipeline.place_offset_world_x_m must be calibrated before --execute"
-            )
-        place_offset = 0.0
+        raise ValueError(
+            "pipeline.place_offset_world_x_m must be calibrated before execution"
+        )
     place_offset = _finite_float(
         place_offset,
         "pipeline.place_offset_world_x_m",
@@ -407,7 +400,6 @@ def create_x5_execution_runtime(
         server_url=server_url,
         arm=pipeline_config.get("arm"),
         camera_name=pipeline_config.get("camera_name"),
-        execute=execute,
         place_approach_offset_x_m=x5_place_config.get(
             "place_approach_offset_x_m"
         ),
@@ -427,13 +419,11 @@ def create_x5_execution_runtime(
             pipeline_config.get("place_depth_patch_px", 9)
         ),
         place_offset_world_x_m=place_offset,
-        execute=execute,
     )
     _write_json(
         run_dir / "run.json",
         {
             "config_path": str(config_file),
-            "execute": execute,
             "x5_server_url": server_url,
             "grasp_server_url": pipeline_config.get("grasp_server_url"),
             "camera_name": runtime_action_backend.camera_name,
@@ -593,7 +583,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     pipeline_parser.add_argument(
         "--execute",
         action="store_true",
-        help="Send motion commands. Without this flag the backend plans only.",
+        required=True,
+        help="Required confirmation that this command sends robot motion.",
     )
     return parser
 
@@ -604,7 +595,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         object_name=args.object_name,
         target_name=args.target_name,
         config_path=args.config_path,
-        execute=args.execute,
     )
     print(json.dumps(report.to_dict(), indent=2, default=_json_default))
     return 0 if report.success else 1

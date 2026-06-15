@@ -125,7 +125,6 @@ def _runtime(tmp_path):
         run_dir=tmp_path / "run",
         place_depth_patch_px=9,
         place_offset_world_x_m=0.1,
-        execute=False,
     )
 
 

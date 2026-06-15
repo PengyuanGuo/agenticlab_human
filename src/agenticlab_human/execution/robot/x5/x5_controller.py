@@ -1,8 +1,7 @@
-"""X5 controller contract, mock implementation, and real X5 adapter."""
+"""Real X5 arm controller and its server-side contract."""
 
 from __future__ import annotations
 
-import copy
 import importlib
 import logging
 import math
@@ -14,15 +13,18 @@ from typing import Any, Protocol, runtime_checkable
 from agenticlab_human.execution.robot.x5.contracts import (
     ArmState,
     ComponentHealth,
-    GetStateCommand,
-    GripperState,
     MoveJPointCommand,
     MoveJointsCommand,
     MoveLPointCommand,
     RobotCommand,
     RobotState,
-    SetGripperCommand,
-    StopCommand,
+)
+from agenticlab_human.execution.robot.x5.conversion import (
+    degrees_to_radians,
+    euler_xyz_deg_to_quat_xyzw,
+    radians_to_degrees,
+    rotvec_to_euler_xyz_deg,
+    xapi_pose_to_xyzw,
 )
 
 logger = logging.getLogger("uvicorn.error")
@@ -46,129 +48,6 @@ class X5Controller(Protocol):
         """Stop motion and release resources."""
 
 
-class MockX5Controller:
-    """Immediate, in-memory execution model for both X5 arms."""
-
-    def __init__(
-        self,
-        arms: Sequence[str] = ("left", "right"),
-        initial_joints_rad: Sequence[float] | None = None,
-    ) -> None:
-        initial = list(initial_joints_rad or [0.0] * 7)
-        if len(initial) != 7:
-            raise ValueError("initial_joints_rad must contain 7 values")
-        if not arms:
-            raise ValueError("at least one mock arm is required")
-
-        self._initialized = False
-        self._lock = threading.Lock()
-        self._gripper = GripperState(
-            connected=False,
-            moving=False,
-            position=1.0,
-            raw_position=1000,
-            grip_status=1,
-        )
-        self._arms = {
-            str(arm): ArmState(
-                connected=False,
-                moving=False,
-                joints_rad=initial.copy(),
-                tcp_pose_xyzw=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
-                gripper_position=1.0,
-            )
-            for arm in arms
-        }
-
-    def initialize(self) -> None:
-        with self._lock:
-            self._initialized = True
-            for state in self._arms.values():
-                state.connected = True
-            self._gripper.connected = True
-
-    def execute(self, command: RobotCommand) -> None:
-        with self._lock:
-            self._require_initialized()
-            command_type = command.type
-            if command_type == "get_state":
-                self._require_target(command.arm)
-                return
-            if command_type == "move_joints":
-                state = self._require_arm(command.arm)
-                state.moving = True
-                state.joints_rad = [float(value) for value in command.joints_rad]
-                state.moving = False
-                return
-            if command_type in ("movej_point", "movel_point"):
-                state = self._require_arm(command.arm)
-                state.moving = True
-                xyz = [float(value) for value in command.tcp_pose_xyz_rotvec[:3]]
-                quaternion = _rotvec_to_quat_xyzw(command.tcp_pose_xyz_rotvec[3:])
-                state.tcp_pose_xyzw = xyz + list(quaternion)
-                state.moving = False
-                return
-            if command_type == "set_gripper":
-                self._gripper.moving = True
-                self._gripper.position = float(command.position)
-                self._gripper.raw_position = int(round(command.position * 1000.0))
-                self._gripper.grip_status = 1
-                self._gripper.moving = False
-                return
-            if command_type == "stop":
-                for state in self._selected_states(command.arm):
-                    state.moving = False
-                return
-            raise ValueError(
-                f"unsupported robot command type={command_type!r} "
-                f"class={type(command).__module__}.{type(command).__name__}"
-            )
-
-    def get_state(self) -> RobotState:
-        with self._lock:
-            self._require_initialized()
-            arms = {name: copy.deepcopy(state) for name, state in self._arms.items()}
-            gripper = copy.deepcopy(self._gripper)
-        return RobotState(arms=arms, gripper=gripper, timestamp_ns=time.time_ns())
-
-    def health(self) -> ComponentHealth:
-        with self._lock:
-            initialized = self._initialized
-        return ComponentHealth(
-            ready=initialized,
-            backend="mock",
-            detail="ready" if initialized else "not initialized",
-        )
-
-    def shutdown(self) -> None:
-        with self._lock:
-            for state in self._arms.values():
-                state.moving = False
-                state.connected = False
-            self._gripper.moving = False
-            self._gripper.connected = False
-            self._initialized = False
-
-    def _require_initialized(self) -> None:
-        if not self._initialized:
-            raise RuntimeError("mock X5 controller is not initialized")
-
-    def _require_arm(self, arm: str) -> ArmState:
-        try:
-            return self._arms[arm]
-        except KeyError as exc:
-            raise ValueError(f"mock arm is not configured: {arm}") from exc
-
-    def _require_target(self, arm: str) -> None:
-        if arm != "all":
-            self._require_arm(arm)
-
-    def _selected_states(self, arm: str) -> list[ArmState]:
-        if arm == "all":
-            return list(self._arms.values())
-        return [self._require_arm(arm)]
-
-
 class RealX5Controller:
     """Minimal xapi-backed X5 controller for discrete low-speed commands.
 
@@ -177,12 +56,12 @@ class RealX5Controller:
     """
 
     DEFAULT_JOINT_LIMITS_DEG = (
-        (-165.0, 165.0),
-        (-28.0, 90.0),
-        (-153.0, 153.0),
-        (-28.0, 103.0),
-        (-165.0, 165.0),
-        (-28.0, 98.0),
+        (-170.0, 170.0),
+        (-90.0, 30.0),
+        (-155.0, 155.0),
+        (-120.0, 30.0),
+        (-168.0, 168.0),
+        (-100.0, 30.0),
         (-170.0, 170.0),
     )
     DEFAULT_HEAD_JOINTS_DEG = (0.0, 28.0)
@@ -194,18 +73,11 @@ class RealX5Controller:
         mode: int = 100,
         remote: bool = False,
         enable_servo_on_start: bool = True,
-        default_speed_ratio: float = 0.05,
         max_command_speed_ratio: float = 0.1,
         move_timeout_ms: int = 60_000,
         max_joint_delta_deg: float = 5.0,
-        max_movej_point_translation_m: float = 0.5,
-        max_movej_point_rotation_deg: float = 180.0,
-        max_movel_point_translation_m: float = 0.1,
-        max_movel_point_rotation_deg: float = 30.0,
         joint_limits_deg: Sequence[Sequence[float]] | None = None,
         stop_on_shutdown: bool = False,
-        gripper_config: Mapping[str, Any] | None = None,
-        gripper_controller: Any | None = None,
         x5_api: Any | None = None,
     ) -> None:
         if not arm_configs:
@@ -218,11 +90,6 @@ class RealX5Controller:
         for arm, config in self._arm_configs.items():
             if not config.get("robot_ip"):
                 raise ValueError(f"missing robot_ip for X5 arm: {arm}")
-        self._home_joints_deg = {
-            arm: _first_seven_floats(config.get("home_joints_deg"))
-            for arm, config in self._arm_configs.items()
-            if config.get("home_joints_deg") is not None
-        }
         self._head_joints_deg = {
             arm: _two_floats(config.get("head_joints_deg", self.DEFAULT_HEAD_JOINTS_DEG))
             for arm, config in self._arm_configs.items()
@@ -239,80 +106,18 @@ class RealX5Controller:
         self._mode = int(mode)
         self._remote = bool(remote)
         self._enable_servo_on_start = bool(enable_servo_on_start)
-        self._default_speed_ratio = float(default_speed_ratio)
         self._max_command_speed_ratio = float(max_command_speed_ratio)
         self._move_timeout_ms = int(move_timeout_ms)
         self._max_joint_delta_deg = float(max_joint_delta_deg)
-        self._max_movej_point_translation_m = float(max_movej_point_translation_m)
-        self._max_movej_point_rotation_deg = float(max_movej_point_rotation_deg)
-        self._max_movel_point_translation_m = float(max_movel_point_translation_m)
-        self._max_movel_point_rotation_deg = float(max_movel_point_rotation_deg)
         self._joint_limits_deg = _normalize_joint_limits(
             joint_limits_deg or self.DEFAULT_JOINT_LIMITS_DEG
         )
         self._stop_on_shutdown = bool(stop_on_shutdown)
-        self._gripper_config = dict(gripper_config or {})
-        self._gripper = gripper_controller
-        self._owns_gripper = gripper_controller is None
-        self._gripper_enabled = (
-            gripper_controller is not None
-            or bool(self._gripper_config.get("enabled", False))
-        )
-        self._gripper_ready = False
-        self._gripper_force = int(self._gripper_config.get("force", 100))
-        self._gripper_closed_position = int(
-            self._gripper_config.get("closed_position", 0)
-        )
-        self._gripper_open_position = int(
-            self._gripper_config.get("open_position", 1000)
-        )
-        self._gripper_init_timeout_s = float(
-            self._gripper_config.get("init_timeout_s", 10.0)
-        )
-        self._gripper_move_timeout_s = float(
-            self._gripper_config.get("move_timeout_s", 5.0)
-        )
-        self._gripper_poll_interval_s = float(
-            self._gripper_config.get("poll_interval_s", 0.1)
-        )
 
-        if self._default_speed_ratio <= 0.0:
-            raise ValueError("default_speed_ratio must be positive")
         if not (0.0 < self._max_command_speed_ratio <= 1.0):
             raise ValueError("max_command_speed_ratio must be in (0, 1]")
-        if self._default_speed_ratio > self._max_command_speed_ratio:
-            raise ValueError("default_speed_ratio cannot exceed max_command_speed_ratio")
         if self._max_joint_delta_deg <= 0.0:
             raise ValueError("max_joint_delta_deg must be positive")
-        cartesian_limits = {
-            "max_movej_point_translation_m": self._max_movej_point_translation_m,
-            "max_movej_point_rotation_deg": self._max_movej_point_rotation_deg,
-            "max_movel_point_translation_m": self._max_movel_point_translation_m,
-            "max_movel_point_rotation_deg": self._max_movel_point_rotation_deg,
-        }
-        for name, value in cartesian_limits.items():
-            if value <= 0.0:
-                raise ValueError(f"{name} must be positive")
-        if self._gripper_enabled:
-            if not 20 <= self._gripper_force <= 100:
-                raise ValueError("gripper.force must be in [20, 100]")
-            for name, value in (
-                ("closed_position", self._gripper_closed_position),
-                ("open_position", self._gripper_open_position),
-            ):
-                if not 0 <= value <= 1000:
-                    raise ValueError(f"gripper.{name} must be in [0, 1000]")
-            if self._gripper_closed_position == self._gripper_open_position:
-                raise ValueError(
-                    "gripper.closed_position and gripper.open_position must differ"
-                )
-            if self._gripper_init_timeout_s <= 0.0:
-                raise ValueError("gripper.init_timeout_s must be positive")
-            if self._gripper_move_timeout_s <= 0.0:
-                raise ValueError("gripper.move_timeout_s must be positive")
-            if self._gripper_poll_interval_s <= 0.0:
-                raise ValueError("gripper.poll_interval_s must be positive")
-
         self._lock = threading.RLock()
         self._x5 = x5_api
         self._handles: dict[str, Any] = {}
@@ -346,13 +151,10 @@ class RealX5Controller:
 
                     self._set_mode(handle)
                     self._initialize_tool_frame(arm, handle)
-                if self._gripper_enabled:
-                    self._initialize_gripper()
                 self._initialized = True
                 self._last_error = ""
             except Exception as exc:
                 self._last_error = str(exc)
-                self._shutdown_gripper()
                 self._disconnect_all()
                 raise
 
@@ -382,11 +184,8 @@ class RealX5Controller:
             if command_type == "movel_point":
                 self._move_point(command, motion="movl")
                 return
-            if command_type == "set_gripper":
-                self._set_gripper(command)
-                return
             raise ValueError(
-                f"unsupported robot command type={command_type!r} "
+                f"unsupported X5 arm command type={command_type!r} "
                 f"class={type(command).__module__}.{type(command).__name__}"
             )
 
@@ -397,18 +196,14 @@ class RealX5Controller:
                 arm: self._read_arm_state(arm, handle)
                 for arm, handle in self._handles.items()
             }
-            gripper = self._read_gripper_state()
         return RobotState(
             arms=arms,
-            gripper=gripper,
             timestamp_ns=time.time_ns(),
         )
 
     def health(self) -> ComponentHealth:
         with self._lock:
             ready = self._initialized and len(self._handles) == len(self._arm_configs)
-            if self._gripper_enabled:
-                ready = ready and self._gripper_ready
             if ready:
                 arm_details = ", ".join(
                     f"{arm}@{self._arm_configs[arm]['robot_ip']}"
@@ -419,8 +214,6 @@ class RealX5Controller:
                     detail += f"; tool_frames={self._active_tool_frame_nos}"
                 if self._versions:
                     detail += f"; versions={self._versions}"
-                if self._gripper_enabled:
-                    detail += "; gripper=ready"
             else:
                 detail = self._last_error or "not initialized"
         return ComponentHealth(ready=ready, backend="x5", detail=detail)
@@ -429,99 +222,10 @@ class RealX5Controller:
         with self._lock:
             if self._stop_on_shutdown:
                 self._stop_target("all", suppress_errors=True)
-            self._shutdown_gripper()
             self._disconnect_all()
             self._initialized = False
 
-    def _initialize_gripper(self) -> None:
-        if self._gripper is None:
-            port = self._gripper_config.get("port")
-            if not port:
-                raise ValueError("robot.gripper.port is required when gripper is enabled")
-            module = importlib.import_module(
-                "agenticlab_human.execution.robot.x5.gripper_controller"
-            )
-            controller_cls = getattr(module, "GripperController")
-            self._gripper = controller_cls(
-                port=str(port),
-                baudrate=int(self._gripper_config.get("baudrate", 115200)),
-                gripper_id=int(self._gripper_config.get("gripper_id", 1)),
-            )
-
-        if self._gripper.get_init_status() != 1:
-            try:
-                self._gripper.init_gripper(
-                    timeout_s=self._gripper_init_timeout_s,
-                    poll_interval_s=self._gripper_poll_interval_s,
-                )
-            except TypeError:
-                self._gripper.init_gripper()
-        self._gripper.set_force(self._gripper_force)
-        self._gripper_ready = True
-
-    def _shutdown_gripper(self) -> None:
-        gripper = self._gripper
-        self._gripper_ready = False
-        if gripper is None:
-            return
-        if self._owns_gripper:
-            self._try_call(getattr(gripper, "close", None))
-            self._gripper = None
-
-    def _set_gripper(self, command: SetGripperCommand) -> None:
-        if not self._gripper_enabled or self._gripper is None or not self._gripper_ready:
-            raise RuntimeError("single gripper is not configured or initialized")
-
-        target = int(
-            round(
-                self._gripper_closed_position
-                + float(command.position)
-                * (self._gripper_open_position - self._gripper_closed_position)
-            )
-        )
-        self._gripper.set_position(target)
-        if not command.wait:
-            return
-
-        deadline = time.monotonic() + self._gripper_move_timeout_s
-        while True:
-            status = self._gripper.get_grip_status()
-            if status in (1, 2):
-                return
-            if status == 3:
-                raise RuntimeError("gripper reported object-drop status")
-            if time.monotonic() >= deadline:
-                raise RuntimeError(
-                    f"gripper movement timed out after "
-                    f"{self._gripper_move_timeout_s:.1f}s"
-                )
-            time.sleep(self._gripper_poll_interval_s)
-
-    def _read_gripper_state(self) -> GripperState | None:
-        if not self._gripper_enabled:
-            return None
-        if self._gripper is None or not self._gripper_ready:
-            return GripperState(connected=False, moving=False)
-
-        status = self._gripper.get_grip_status()
-        raw_position = self._gripper.get_current_position()
-        position = (
-            self._normalized_gripper_position(raw_position)
-            if raw_position is not None
-            else None
-        )
-        return GripperState(
-            connected=True,
-            moving=status == 0,
-            position=position,
-            raw_position=raw_position,
-            grip_status=status,
-        )
-
-    def _normalized_gripper_position(self, raw_position: int) -> float:
-        span = self._gripper_open_position - self._gripper_closed_position
-        position = (int(raw_position) - self._gripper_closed_position) / span
-        return min(1.0, max(0.0, float(position)))
+    # Lifecycle, state reads, and xapi setup.
 
     def _load_x5(self) -> Any:
         if self._x5 is None:
@@ -588,7 +292,7 @@ class RealX5Controller:
                 )
 
             tool_pose = get_tf(handle, requested_tf_no)
-            tool_pose_xyzw = _pose_to_xyzw(tool_pose)
+            tool_pose_xyzw = xapi_pose_to_xyzw(tool_pose)
             if requested_pose is not None:
                 _validate_tool_frame_pose(
                     arm,
@@ -618,7 +322,7 @@ class RealX5Controller:
         active_tf_no = int(get_tfno(handle))
         self._active_tool_frame_nos[arm] = active_tf_no
         if get_tf is not None:
-            self._tool_frame_poses_xyzw[arm] = _pose_to_xyzw(
+            self._tool_frame_poses_xyzw[arm] = xapi_pose_to_xyzw(
                 get_tf(handle, active_tf_no)
             )
 
@@ -664,7 +368,7 @@ class RealX5Controller:
         return ArmState(
             connected=True,
             moving=moving,
-            joints_rad=[math.radians(value) for value in joints_deg],
+            joints_rad=degrees_to_radians(joints_deg),
             tcp_pose_xyzw=tcp_pose_xyzw,
             tool_frame_no=self._active_tool_frame_nos.get(arm),
             tool_frame_pose_xyzw=self._tool_frame_poses_xyzw.get(arm),
@@ -685,7 +389,7 @@ class RealX5Controller:
 
         get_tf = getattr(x5, "get_tf", None)
         if get_tf is not None:
-            self._tool_frame_poses_xyzw[arm] = _pose_to_xyzw(
+            self._tool_frame_poses_xyzw[arm] = xapi_pose_to_xyzw(
                 get_tf(handle, active_tf_no)
             )
 
@@ -693,12 +397,12 @@ class RealX5Controller:
         x5 = self._load_x5()
         get_wpoint = getattr(x5, "get_wpoint", None)
         if get_wpoint is not None:
-            return _pose_to_xyzw(get_wpoint(handle))
+            return xapi_pose_to_xyzw(get_wpoint(handle))
 
         get_cpoint = getattr(x5, "get_cpoint", None)
         if get_cpoint is None:
             raise RuntimeError("xapi.get_wpoint and xapi.get_cpoint are unavailable")
-        return _pose_to_xyzw(get_cpoint(handle))
+        return xapi_pose_to_xyzw(get_cpoint(handle))
 
     def _stop_target(self, arm: str, *, suppress_errors: bool = False) -> None:
         handles = self._selected_handles(arm)
@@ -722,11 +426,13 @@ class RealX5Controller:
             self._wait_cmd_send_done(handle)
         self._wait_move_done(handle)
 
+    # Primary arm motion. These are the main paths used by the HTTP server.
+
     def _move_joints(self, command: MoveJointsCommand) -> None:
         self._check_speed_ratio(command.speed_ratio)
 
         handle = self._require_handle(command.arm)
-        target_deg = [math.degrees(value) for value in command.joints_rad]
+        target_deg = radians_to_degrees(command.joints_rad)
         current_deg = _joint_to_degrees(self._load_x5().get_cjoint(handle))
         self._check_joint_target(command.arm, current_deg, target_deg)
 
@@ -755,7 +461,6 @@ class RealX5Controller:
         self._check_speed_ratio(command.speed_ratio)
         handle = self._require_handle(command.arm)
         pose6d = _six_finite_floats(command.tcp_pose_xyz_rotvec)
-        self._check_cartesian_target(command.arm, handle, pose6d, motion=motion)
         target = self._make_point(command.arm, handle, pose6d, motion=motion)
         add_data = self._make_mov_point_add(command.speed_ratio)
         motion_func = getattr(self._load_x5(), motion, None)
@@ -774,6 +479,8 @@ class RealX5Controller:
         if command.wait:
             self._wait_move_done(handle)
 
+    # Safety validation. Keep limits separate from the motion command flow.
+
     def _check_speed_ratio(self, speed_ratio: float) -> None:
         if speed_ratio > self._max_command_speed_ratio:
             raise ValueError(
@@ -781,50 +488,33 @@ class RealX5Controller:
                 f"max_command_speed_ratio {self._max_command_speed_ratio:.3f}"
             )
 
-    def _check_cartesian_target(
+    def _check_joint_target(
         self,
         arm: str,
-        handle: Any,
-        target_pose6d: Sequence[float],
-        *,
-        motion: str,
+        current_deg: Sequence[float],
+        target_deg: Sequence[float],
     ) -> None:
-        current_pose = self._read_tcp_pose_xyzw(handle)
-        translation_m = math.sqrt(
-            sum(
-                (target - current) ** 2
-                for target, current in zip(
-                    target_pose6d[:3],
-                    current_pose[:3],
-                    strict=True,
+        for index, (value, (lower, upper)) in enumerate(
+            zip(target_deg, self._joint_limits_deg, strict=True),
+            start=1,
+        ):
+            if value < lower or value > upper:
+                raise ValueError(
+                    f"{arm} joint {index} target {value:.3f} deg is outside "
+                    f"configured limit [{lower:.3f}, {upper:.3f}] deg"
                 )
-            )
-        )
-        target_quaternion = _rotvec_to_quat_xyzw(target_pose6d[3:])
-        rotation_deg = _quaternion_distance_deg(
-            current_pose[3:7],
-            target_quaternion,
-        )
 
-        if motion == "movj":
-            max_translation_m = self._max_movej_point_translation_m
-            max_rotation_deg = self._max_movej_point_rotation_deg
-        elif motion == "movl":
-            max_translation_m = self._max_movel_point_translation_m
-            max_rotation_deg = self._max_movel_point_rotation_deg
-        else:
-            raise ValueError(f"unsupported point motion: {motion}")
+        max_delta = max(
+            abs(target - current)
+            for target, current in zip(target_deg, current_deg, strict=True)
+        )
+        if max_delta > self._max_joint_delta_deg:
+            raise ValueError(
+                f"{arm} move_joints max delta {max_delta:.3f} deg exceeds "
+                f"configured max_joint_delta_deg {self._max_joint_delta_deg:.3f}"
+            )
 
-        if translation_m > max_translation_m:
-            raise ValueError(
-                f"{arm} {motion}(Point) translation {translation_m:.4f} m exceeds "
-                f"configured limit {max_translation_m:.4f} m"
-            )
-        if rotation_deg > max_rotation_deg:
-            raise ValueError(
-                f"{arm} {motion}(Point) rotation {rotation_deg:.3f} deg exceeds "
-                f"configured limit {max_rotation_deg:.3f} deg"
-            )
+    # xapi object construction and SDK-version compatibility.
 
     def _make_point(
         self,
@@ -857,7 +547,7 @@ class RealX5Controller:
             "e3",
             default=self._head_joints_deg[arm][1],
         )
-        a_deg, b_deg, c_deg = _rotvec_to_euler_xyz_deg(
+        a_deg, b_deg, c_deg = rotvec_to_euler_xyz_deg(
             tcp_pose_xyz_rotvec[3:]
         )
         values = (
@@ -902,33 +592,6 @@ class RealX5Controller:
         if point is None or point is False:
             raise RuntimeError("xapi returned an invalid reference Point")
         return point
-
-    def _check_joint_target(
-        self,
-        arm: str,
-        current_deg: Sequence[float],
-        target_deg: Sequence[float],
-    ) -> None:
-        for index, (value, (lower, upper)) in enumerate(
-            zip(target_deg, self._joint_limits_deg, strict=True),
-            start=1,
-        ):
-            if value < lower or value > upper:
-                raise ValueError(
-                    f"{arm} joint {index} target {value:.3f} deg is outside "
-                    f"configured limit [{lower:.3f}, {upper:.3f}] deg"
-                )
-
-        deltas = [
-            abs(target - current)
-            for target, current in zip(target_deg, current_deg, strict=True)
-        ]
-        max_delta = max(deltas)
-        if max_delta > self._max_joint_delta_deg:
-            raise ValueError(
-                f"{arm} move_joints max delta {max_delta:.3f} deg exceeds "
-                f"configured max_joint_delta_deg {self._max_joint_delta_deg:.3f}"
-            )
 
     def _make_joint(self, arm: str, joints_deg: Sequence[float]) -> Any:
         x5 = self._load_x5()
@@ -1026,15 +689,6 @@ def _normalize_joint_limits(
         if lower >= upper:
             raise ValueError(f"invalid joint limit for joint {index}: {lower} >= {upper}")
     return [(lower, upper) for lower, upper in limits]
-
-
-def _first_seven_floats(values: Any) -> list[float]:
-    if values is None:
-        raise ValueError("expected 7 joint values, got None")
-    converted = [float(value) for value in values]
-    if len(converted) < 7:
-        raise ValueError("expected at least 7 joint values")
-    return converted[:7]
 
 
 def _two_floats(values: Any) -> list[float]:
@@ -1151,7 +805,7 @@ def _validate_tool_frame_pose(
         )
     )
 
-    requested_quaternion = _euler_xyz_deg_to_quat_xyzw(*requested_pose[3:6])
+    requested_quaternion = euler_xyz_deg_to_quat_xyzw(*requested_pose[3:6])
     actual_quaternion = actual_pose_xyzw[3:7]
     quaternion_dot = abs(
         sum(
@@ -1168,22 +822,6 @@ def _validate_tool_frame_pose(
             f"{arm} TF{tf_no} readback does not match configured pose: "
             f"requested={list(requested_pose)}, actual_xyzw={list(actual_pose_xyzw)}"
         )
-
-
-def _pose_to_xyzw(point_or_pose: Any) -> list[float]:
-    if point_or_pose is None or point_or_pose is False:
-        raise ValueError("xapi returned an invalid pose")
-
-    pose = getattr(point_or_pose, "pose", point_or_pose)
-    x_mm = _read_value(pose, "x", 0)
-    y_mm = _read_value(pose, "y", 1)
-    z_mm = _read_value(pose, "z", 2)
-    a_deg = _read_value(pose, "a", 3, default=0.0)
-    b_deg = _read_value(pose, "b", 4, default=0.0)
-    c_deg = _read_value(pose, "c", 5, default=0.0)
-
-    qx, qy, qz, qw = _euler_xyz_deg_to_quat_xyzw(a_deg, b_deg, c_deg)
-    return [x_mm / 1000.0, y_mm / 1000.0, z_mm / 1000.0, qx, qy, qz, qw]
 
 
 def _joint_to_degrees(joint: Any) -> list[float]:
@@ -1207,18 +845,6 @@ def _joint_to_degrees(joint: Any) -> list[float]:
     return values
 
 
-def _read_value(obj: Any, attr_name: str, index: int, *, default: float | None = None) -> float:
-    if isinstance(obj, Mapping) and attr_name in obj:
-        return float(obj[attr_name])
-    if hasattr(obj, attr_name):
-        return float(getattr(obj, attr_name))
-    if isinstance(obj, Sequence) and not isinstance(obj, (str, bytes)) and len(obj) > index:
-        return float(obj[index])
-    if default is not None:
-        return default
-    raise ValueError(f"missing value: {attr_name}")
-
-
 def _state_is_moving(system_state: Any) -> bool:
     for attr in ("moving", "is_moving", "in_motion"):
         if hasattr(system_state, attr):
@@ -1228,98 +854,3 @@ def _state_is_moving(system_state: Any) -> bool:
             if key in system_state:
                 return bool(system_state[key])
     return False
-
-
-def _euler_xyz_deg_to_quat_xyzw(a_deg: float, b_deg: float, c_deg: float) -> tuple[float, float, float, float]:
-    roll = math.radians(a_deg)
-    pitch = math.radians(b_deg)
-    yaw = math.radians(c_deg)
-
-    cr = math.cos(roll / 2.0)
-    sr = math.sin(roll / 2.0)
-    cp = math.cos(pitch / 2.0)
-    sp = math.sin(pitch / 2.0)
-    cy = math.cos(yaw / 2.0)
-    sy = math.sin(yaw / 2.0)
-
-    qx = sr * cp * cy - cr * sp * sy
-    qy = cr * sp * cy + sr * cp * sy
-    qz = cr * cp * sy - sr * sp * cy
-    qw = cr * cp * cy + sr * sp * sy
-    return qx, qy, qz, qw
-
-
-def _rotvec_to_quat_xyzw(
-    rotvec_rad: Sequence[float],
-) -> tuple[float, float, float, float]:
-    rx, ry, rz = (float(value) for value in rotvec_rad)
-    theta = math.sqrt(rx * rx + ry * ry + rz * rz)
-    if theta < 1e-12:
-        return 0.0, 0.0, 0.0, 1.0
-
-    scale = math.sin(theta / 2.0) / theta
-    return rx * scale, ry * scale, rz * scale, math.cos(theta / 2.0)
-
-
-def _rotvec_to_euler_xyz_deg(rotvec_rad: Sequence[float]) -> tuple[float, float, float]:
-    """Convert axis-angle radians to X5 Euler XYZ degrees."""
-
-    rx, ry, rz = (float(value) for value in rotvec_rad)
-    theta = math.sqrt(rx * rx + ry * ry + rz * rz)
-    if theta < 1e-12:
-        return 0.0, 0.0, 0.0
-
-    x = rx / theta
-    y = ry / theta
-    z = rz / theta
-    cos_theta = math.cos(theta)
-    sin_theta = math.sin(theta)
-    one_minus_cos = 1.0 - cos_theta
-    rotation = (
-        (
-            cos_theta + x * x * one_minus_cos,
-            x * y * one_minus_cos - z * sin_theta,
-            x * z * one_minus_cos + y * sin_theta,
-        ),
-        (
-            y * x * one_minus_cos + z * sin_theta,
-            cos_theta + y * y * one_minus_cos,
-            y * z * one_minus_cos - x * sin_theta,
-        ),
-        (
-            z * x * one_minus_cos - y * sin_theta,
-            z * y * one_minus_cos + x * sin_theta,
-            cos_theta + z * z * one_minus_cos,
-        ),
-    )
-
-    horizontal = math.hypot(rotation[0][0], rotation[1][0])
-    if horizontal > 1e-9:
-        a_rad = math.atan2(rotation[2][1], rotation[2][2])
-        b_rad = math.atan2(-rotation[2][0], horizontal)
-        c_rad = math.atan2(rotation[1][0], rotation[0][0])
-    else:
-        a_rad = math.atan2(-rotation[1][2], rotation[1][1])
-        b_rad = math.atan2(-rotation[2][0], horizontal)
-        c_rad = 0.0
-
-    return math.degrees(a_rad), math.degrees(b_rad), math.degrees(c_rad)
-
-
-def _quaternion_distance_deg(
-    first_xyzw: Sequence[float],
-    second_xyzw: Sequence[float],
-) -> float:
-    first = [float(value) for value in first_xyzw]
-    second = [float(value) for value in second_xyzw]
-    first_norm = math.sqrt(sum(value * value for value in first))
-    second_norm = math.sqrt(sum(value * value for value in second))
-    if first_norm < 1e-12 or second_norm < 1e-12:
-        raise ValueError("orientation quaternion must be non-zero")
-    dot = abs(
-        sum(
-            left / first_norm * (right / second_norm)
-            for left, right in zip(first, second, strict=True)
-        )
-    )
-    return math.degrees(2.0 * math.acos(min(1.0, max(-1.0, dot))))
