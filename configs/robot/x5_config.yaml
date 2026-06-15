@@ -9,13 +9,13 @@ action_backend:
   arm: "left"
   camera_name: "Gemini335"
   approach_distance_m: 0.06
-  home_speed_ratio: 0.10
-  home_max_step_deg: 4.0
-  approach_speed_ratio: 0.10
-  grasp_speed_ratio: 0.02
-  retreat_speed_ratio: 0.02
-  place_approach_speed_ratio: 0.10
-  place_speed_ratio: 0.02
+  home_speed_ratio: 0.7
+  home_max_step_deg: 15.0
+  approach_speed_ratio: 0.7
+  grasp_speed_ratio: 0.1
+  retreat_speed_ratio: 0.1
+  place_approach_speed_ratio: 0.7
+  place_speed_ratio: 0.05
   # Signed world-X offset: pre-place.x = place.x + offset.
   place_approach_offset_x_m: -0.05
   # Fixed X5 TCP orientation for all place actions.
@@ -40,8 +40,8 @@ robot:
   remote: false
   enable_servo_on_start: true
   stop_on_shutdown: false
-  max_command_speed_ratio: 0.30
-  max_joint_delta_deg: 5.0
+  max_command_speed_ratio: 0.7
+  max_joint_delta_deg: 15.0
   move_timeout_ms: 60000
   gripper:
     enabled: true
@@ -69,7 +69,8 @@ robot:
       position_m: [0.0, 0.0, 0.16]
       rpy_deg: [0.0, 0.0, 0.0]
     home_joints_deg: [-24, 10, -53, 102, 101, 80, -18] # gripper facing down
-    check_gripper_joints_deg: [-15, 24, -64, 89, 44, 74, -2] # robot checks the gripper position
+    # check_gripper_joints_deg: [-15, 24, -64, 89, 44, 74, -2] # robot checks the gripper position
+    check_gripper_joints_deg: [-64, 37, -16, 95, 108, 86, -40]
     head_joints_deg: [0, 28]
     # home_joints_deg: [-49, 55, -18, 90, 0, 100, -18] # calibration home pose
     # head_joints_deg: [0, 28]

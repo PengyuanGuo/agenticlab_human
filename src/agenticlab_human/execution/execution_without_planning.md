@@ -621,7 +621,7 @@ report = execute_pipeline(
 ```bash
 python -m agenticlab_human.execution.pipeline pipeline \
   --object number_block_3 \
-  --target yellow_box \
+  --target yellow_bin \
   --config configs/execution/x5_pipeline.yaml \
   --execute
 ```
@@ -651,7 +651,7 @@ configs/execution/
 职责：
 
 - `pipeline.py`：runtime 生命周期、`capture_scene_from_x5_server()`、
-  pick/place 编排和 CLI；
+pick/place 编排和 CLI；
 - `pipeline_types.py`：`SceneSnapshot` 和 run manifest；
 - `place_target.py`：depth patch、反投影和 point transform；
 - `fine_tuned_yolo_detector.py`：固定类别 fine-tuned YOLO；
@@ -760,10 +760,10 @@ manifest 至少记录：
 4. 实现 GraspNet adapter 和 place target 几何函数。
 5. 增加 X5 world-X offset 和固定 orientation。
 6. 完成 mock HTTP 测试并验证真机：
-   - capture；
-   - detection 和 place point geometry；
-   - grasp request；
-   - pick、place 和 gripper。
+  - capture；
+  - detection 和 place point geometry；
+  - grasp request；
+  - pick、place 和 gripper。
 
 `RemoteX5SceneProvider` 延后到多数据源或 capture 逻辑明显复杂时再实现。
 
@@ -793,3 +793,4 @@ manifest 至少记录：
 - full-scene 多物体 grasp cache；
 - 跨进程持久化 pick state；
 - 多机器人通用配置。
+
