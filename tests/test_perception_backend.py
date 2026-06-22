@@ -10,7 +10,7 @@ from agenticlab_human.perception.backend.perception_backend import (
     BasePerceptionBackend,
     DetectionResult,
 )
-from agenticlab_human.perception.detection.yolo_world_detector import YoloWorldDetector
+from agenticlab_human.perception.detection.yolo_detector import YOLODETECTOR
 
 
 class FakeTensor:
@@ -86,8 +86,8 @@ def test_detection_result_save_matches_object_detector_format(tmp_path):
     assert saved["objects"][0]["center_point"] == [60, 60]
 
 
-def test_yolo_world_result_conversion_aligns_with_detection_result_format(tmp_path):
-    detector = YoloWorldDetector(output_dir=str(tmp_path))
+def test_yolo_result_conversion_aligns_with_detection_result_format(tmp_path):
+    detector = YOLODETECTOR("unused.pt", output_dir=str(tmp_path), model=object())
 
     objects = detector._results_to_objects([FakeYoloResult()])
 
@@ -103,18 +103,11 @@ def test_yolo_world_result_conversion_aligns_with_detection_result_format(tmp_pa
 
 
 def test_regular_yolo_result_conversion_filters_requested_classes(tmp_path):
-    detector = YoloWorldDetector(model_path="yolo26n.pt", model_type="regular", output_dir=str(tmp_path))
+    detector = YOLODETECTOR("unused.pt", output_dir=str(tmp_path), model=object())
 
-    objects = detector._results_to_objects([FakeYoloResult()], requested_classes=["person"])
+    objects = detector._results_to_objects([FakeYoloResult()], requested_names=["person"])
 
     assert objects == []
-
-
-def test_auto_model_type_recognizes_yoloe(tmp_path):
-    detector = YoloWorldDetector(model_path="yoloe-26x-seg.pt", output_dir=str(tmp_path))
-
-    assert detector._resolved_model_type == "yoloe"
-    assert detector._uses_text_classes is True
 
 
 def test_execution_context_accepts_detection_result_output():
@@ -133,13 +126,14 @@ def test_execution_context_accepts_detection_result_output():
 
 
 @pytest.mark.skipif(
-    os.environ.get("AGENTICLAB_RUN_YOLO_WORLD_SMOKE") != "1",
-    reason="Set AGENTICLAB_RUN_YOLO_WORLD_SMOKE=1 in a local YOLO-World environment.",
+    os.environ.get("AGENTICLAB_RUN_YOLO_SMOKE") != "1",
+    reason="Set AGENTICLAB_RUN_YOLO_SMOKE=1 and AGENTICLAB_YOLO_MODEL_PATH locally.",
 )
-def test_yolo_world_detector_real_smoke(tmp_path):
+def test_yolo_detector_real_smoke(tmp_path):
     pytest.importorskip("ultralytics")
+    model_path = os.environ["AGENTICLAB_YOLO_MODEL_PATH"]
     image = Image.open("data/data_for_test/task_parser/04_stack1_color.png").convert("RGB")
-    detector = YoloWorldDetector(output_dir=str(tmp_path))
+    detector = YOLODETECTOR(model_path, output_dir=str(tmp_path))
 
     result = detector.detect(image, ["orange cube", "yellow cube", "green cube", "blue cube", "pink plate"])
     save_dir = detector.save_detection(image, result)

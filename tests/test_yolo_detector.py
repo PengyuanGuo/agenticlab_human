@@ -2,9 +2,7 @@ from types import SimpleNamespace
 
 from PIL import Image
 
-from agenticlab_human.perception.detection.fine_tuned_yolo_detector import (
-    FineTunedYoloDetector,
-)
+from agenticlab_human.perception.detection.yolo_detector import YOLODETECTOR
 
 
 class FakeTensor:
@@ -38,9 +36,9 @@ class FakeModel:
         ]
 
 
-def test_fine_tuned_yolo_filters_with_checkpoint_class_ids(tmp_path):
+def test_yolo_detector_filters_with_checkpoint_class_ids(tmp_path):
     model = FakeModel()
-    detector = FineTunedYoloDetector(
+    detector = YOLODETECTOR(
         "unused.pt",
         output_dir=str(tmp_path),
         model=model,
@@ -56,9 +54,9 @@ def test_fine_tuned_yolo_filters_with_checkpoint_class_ids(tmp_path):
     assert model.calls[0]["classes"] == [1]
 
 
-def test_fine_tuned_yolo_reports_unavailable_class_without_inference(tmp_path):
+def test_yolo_detector_reports_unavailable_class_without_inference(tmp_path):
     model = FakeModel()
-    detector = FineTunedYoloDetector(
+    detector = YOLODETECTOR(
         "unused.pt",
         output_dir=str(tmp_path),
         model=model,

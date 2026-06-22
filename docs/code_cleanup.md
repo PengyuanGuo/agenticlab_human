@@ -11,3 +11,4 @@
 remove _inject_test_grasp_camera_pose 冗余的原来的测试代码
 3. clean up unused code
 4. x5_remote_backend.py, x5_controller.py 删除冗余代码（gripper 逻辑拆分出来， 坐标转换 拆分）
+5. 

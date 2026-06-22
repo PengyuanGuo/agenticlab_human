@@ -139,7 +139,7 @@ class GraspBackend(Protocol):
 - `FlexivActionBackend`  ← 包装现有 `action_wrapper_flexiv.ActionWrapper`
 - `UR5eActionBackend`    ← 包装现有 `action_wrapper.ActionWrapper`
 - `X5ActionBackend` / `TopstarActionBackend` / `HumanoidActionBackend` … 后续按需添加
-- `YoloWorldDetector` / `GroundingDinoDetector` / `MockDetector`
+- `YOLODETECTOR` / `GroundingDinoDetector` / `MockDetector`
 - `AnyGraspBackend` / `MockGraspBackend`
 
 上层 action 调度逻辑保持平台无关：

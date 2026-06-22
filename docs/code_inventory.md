@@ -44,8 +44,65 @@
   home segmentation, gripper, and failure-stop tests.
 
 ## Perception
-- perception/yolo_detector.py: Object bbox detection.
+- perception/detection/yolo_detector.py: YOLO object bbox detection.
 - grasp/graspnet_client.py: HTTP client to AnyGrasp/GraspNet service.
+
+## 强制命名约定
+
+### 坐标变换统一使用 `T_target_source`
+
+代码中的坐标变换变量只使用：
+
+```text
+T_target_source
+```
+
+含义：
+
+- `T_target_source` 表示 source 坐标系在 target 坐标系中的位姿；
+- 它把 source 坐标系表达的点转换为 target 坐标系表达；
+- 计算形式为 `p_target = T_target_source @ p_source`。
+
+标准变量名：
+
+```text
+T_camera_grasp
+T_grasp_tcp
+T_world_camera
+T_world_tcp
+```
+
+禁止在代码中为同一个变换混用以下别名：
+
+```text
+world_from_camera
+camera_to_world
+camera_from_grasp
+camera_to_grasp
+```
+
+例如只写：
+
+```python
+# 相机坐标系在世界坐标系中的位姿；把 camera-frame point 转为 world-frame point。
+p_world = T_world_camera @ p_camera_h
+```
+
+注释可以使用自然语言解释 frame 含义，但变量名仍然必须保持
+`T_target_source`。
+
+矩阵组合也按相同规则书写：
+
+```text
+T_world_tcp =
+    T_world_camera
+    @ T_camera_grasp
+    @ T_grasp_tcp
+```
+
+实现和 code review 时不接受同一文件同时出现 `T_world_camera`、
+`world_from_camera` 和 `camera_to_world`。
+
 
 ## Unclear / Candidate for deletion
 - xxx.py: Seems duplicated with yyy.py.

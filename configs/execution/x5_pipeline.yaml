@@ -12,7 +12,8 @@ pipeline:
   request_timeout_s: 120.0
 
 detector:
-  type: fine_tuned_yolo
+  type: yolo
+  # Use the trained closed-set tabletop checkpoint for real X5 execution.
   model_path: train_yolo/runs/train/tabletop_blocks_cup_bin_001_yolo26s/weights/best.pt
   confidence: 0.25
   image_size: 960

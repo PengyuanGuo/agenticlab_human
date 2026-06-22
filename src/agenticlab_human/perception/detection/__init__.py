@@ -1,7 +1,5 @@
 """Object detection backends."""
 
-from agenticlab_human.perception.detection.fine_tuned_yolo_detector import (
-    FineTunedYoloDetector,
-)
+from agenticlab_human.perception.detection.yolo_detector import YOLODETECTOR
 
-__all__ = ["FineTunedYoloDetector"]
+__all__ = ["YOLODETECTOR"]

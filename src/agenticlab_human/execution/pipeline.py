@@ -30,9 +30,7 @@ from agenticlab_human.perception.backend.perception_backend import (
     BBox,
     DetectionResult,
 )
-from agenticlab_human.perception.detection.fine_tuned_yolo_detector import (
-    FineTunedYoloDetector,
-)
+from agenticlab_human.perception.detection.yolo_detector import YOLODETECTOR
 from agenticlab_human.perception.grasping.grasp_backend import GraspCandidate
 from agenticlab_human.perception.grasping.http_backend import GraspNetHTTPBackend
 
@@ -330,11 +328,9 @@ def create_x5_execution_runtime(
     detector_config = config.get("detector", {})
     grasp_config = config.get("grasp", {})
     x5_place_config = config.get("x5_place", {})
-    detector_type = str(detector_config.get("type", "fine_tuned_yolo"))
-    if detector_type != "fine_tuned_yolo":
-        raise ValueError(
-            "detector.type must be 'fine_tuned_yolo' for the X5 pipeline"
-        )
+    detector_type = str(detector_config.get("type", "yolo"))
+    if detector_type != "yolo":
+        raise ValueError("detector.type must be 'yolo' for the X5 pipeline")
 
     place_offset = pipeline_config.get("place_offset_world_x_m")
     if place_offset is None:
@@ -361,7 +357,7 @@ def create_x5_execution_runtime(
         server_url,
         timeout_s=request_timeout_s,
     )
-    runtime_detector = detector or FineTunedYoloDetector(
+    runtime_detector = detector or YOLODETECTOR(
         model_path=_required_string(detector_config, "model_path", "detector"),
         confidence=float(detector_config.get("confidence", 0.25)),
         image_size=int(detector_config.get("image_size", 960)),

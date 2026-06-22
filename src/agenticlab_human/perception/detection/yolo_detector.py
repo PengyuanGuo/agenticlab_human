@@ -1,4 +1,4 @@
-"""Closed-set detector backed by a fine-tuned Ultralytics YOLO checkpoint."""
+"""Closed-set Ultralytics YOLO detector."""
 
 from __future__ import annotations
 
@@ -13,8 +13,8 @@ from agenticlab_human.perception.backend.perception_backend import (
 )
 
 
-class FineTunedYoloDetector(BasePerceptionBackend):
-    """Run fixed-class detection with an explicitly configured checkpoint."""
+class YOLODETECTOR(BasePerceptionBackend):
+    """Run YOLO detection with the explicitly configured checkpoint."""
 
     def __init__(
         self,
@@ -22,7 +22,7 @@ class FineTunedYoloDetector(BasePerceptionBackend):
         *,
         confidence: float = 0.25,
         image_size: int = 960,
-        output_dir: str = "output/perception/fine_tuned_yolo",
+        output_dir: str = "output/perception/yolo_detector",
         session_name: str | None = None,
         model: Any | None = None,
     ) -> None:
@@ -48,7 +48,7 @@ class FineTunedYoloDetector(BasePerceptionBackend):
                 success=False,
                 objects=[],
                 image_shape=(height, width),
-                summary={"method": "fine_tuned_yolo", "reason": "no classes requested"},
+                summary={"method": "yolo", "reason": "no classes requested"},
             )
 
         model = self._load_model()
@@ -65,7 +65,7 @@ class FineTunedYoloDetector(BasePerceptionBackend):
                 objects=[],
                 image_shape=(height, width),
                 summary={
-                    "method": "fine_tuned_yolo",
+                    "method": "yolo",
                     "model_path": self.model_path,
                     "requested_classes": requested_names,
                     "unavailable_requested_classes": unavailable,
@@ -81,14 +81,14 @@ class FineTunedYoloDetector(BasePerceptionBackend):
             conf=self.confidence,
             verbose=False,
         )
-        objects = _results_to_objects(results, requested_names)
+        objects = self._results_to_objects(results, requested_names=requested_names)
         return DetectionResult(
             success=bool(objects),
             objects=objects,
             image_shape=(height, width),
             raw_output={"num_result_batches": len(results)},
             summary={
-                "method": "fine_tuned_yolo",
+                "method": "yolo",
                 "model_path": self.model_path,
                 "requested_classes": requested_names,
                 "confidence": self.confidence,
@@ -102,17 +102,22 @@ class FineTunedYoloDetector(BasePerceptionBackend):
             return self._model
         checkpoint = Path(self.model_path).expanduser()
         if not checkpoint.is_file():
-            raise FileNotFoundError(
-                f"fine-tuned YOLO checkpoint does not exist: {checkpoint}"
-            )
+            raise FileNotFoundError(f"YOLO checkpoint does not exist: {checkpoint}")
         try:
             from ultralytics import YOLO
         except ImportError as exc:
             raise ImportError(
-                "FineTunedYoloDetector requires the optional ultralytics package"
+                "YOLODETECTOR requires the optional ultralytics package"
             ) from exc
         self._model = YOLO(str(checkpoint))
         return self._model
+
+    def _results_to_objects(
+        self,
+        results: Sequence[Any],
+        requested_names: Sequence[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        return _results_to_objects(results, requested_names or [])
 
 
 def _normalize_model_names(names: Any) -> dict[int, str]:
@@ -154,7 +159,7 @@ def _results_to_objects(
             strict=True,
         ):
             label = names.get(int(class_id), str(int(class_id)))
-            if label.lower() not in requested:
+            if requested and label.lower() not in requested:
                 continue
             x1, y1, x2, y2 = [int(round(value)) for value in xyxy]
             objects.append(

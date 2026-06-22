@@ -283,15 +283,24 @@ def _normalize_depth_for_preview(depth_mm: np.ndarray) -> np.ndarray:
     preview[depth_mm <= 0] = 0
     return preview
 
+def _run_move_home(robot_config_path: str, camera_config_path: str, args: argparse.Namespace) -> int:
+    """Temporary CLI helper: move the configured arm to home_joints_deg."""
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Capture one RGB-D frame from an X5 HTTP server.")
-    parser.add_argument("--server-url", default="http://127.0.0.1:8000")
-    parser.add_argument("--save-dir", default="output/x5_http_captures")
-    parser.add_argument("--preview", action="store_true")
-    parser.add_argument("--timeout", type=float, default=30.0)
-    args = parser.parse_args()
+    from agenticlab_human.execution.robot.x5.x5_remote_backend import (
+        RemoteX5ActionBackend,
+    )
+    
+    backend = RemoteX5ActionBackend(robot_config_path=robot_config_path, camera_config_path=camera_config_path, server_url=args.server_url)
+    backend.initialize()
+    try:
+        result = backend.move_home()
+    finally:
+        backend.shutdown()
+    print(json.dumps(result.to_dict(), indent=2, ensure_ascii=False))
+    return 0 if result.success else 1
 
+
+def _run_capture(args: argparse.Namespace) -> int:
     with X5HTTPClient(args.server_url, timeout_s=args.timeout) as client:
         health = client.health()
         frame = client.capture_rgbd()
@@ -309,7 +318,26 @@ def main() -> None:
 
     if args.preview:
         display_rgbd_frame(frame)
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="X5 HTTP client utilities (capture RGB-D or move home).",
+    )
+    parser.add_argument("--server-url", default="http://127.0.0.1:8000")
+    parser.add_argument("--timeout", type=float, default=90.0)
+    parser.add_argument("--home", action="store_true", help="Move to home_joints_deg via RemoteX5ActionBackend.")
+    parser.add_argument("--save-dir", default="output/x5_http_captures")
+    parser.add_argument("--preview", action="store_true")
+    args = parser.parse_args(argv)
+
+    if args.home:
+        robot_config_path = "configs/robot/x5_config.yaml"
+        camera_config_path = "configs/perception/camera_config.yaml"
+        return _run_move_home(robot_config_path, camera_config_path, args)
+    return _run_capture(args)
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

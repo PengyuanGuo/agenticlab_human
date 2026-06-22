@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import argparse
+import json
 import threading
 import time
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
+
+import yaml
 
 from agenticlab_human.execution.robot.x5.contracts import (
     ComponentHealth,
@@ -329,3 +334,62 @@ class MockGripperService:
             self._initialized = False
             self._state.connected = False
             self._state.moving = False
+
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Directly control the X5 Dahuan gripper on the Server PC.",
+    )
+    parser.add_argument(
+        "--port",
+        help="Serial port override, e.g. COM6 or /dev/ttyUSB0.",
+    )
+    parser.add_argument("--baudrate", type=int, help="Serial baudrate override.")
+    parser.add_argument("--gripper-id", type=int, help="Modbus gripper id override.")
+    parser.add_argument("--force", type=int, help="Grip force override in [20, 100].")
+    parser.add_argument("--init-timeout-s", type=float, help="Initialization timeout.")
+    parser.add_argument("--state", action="store_true", help="Print gripper state.")
+    parser.add_argument("--quit", action="store_true", help="Exit without touching the gripper.")
+
+    action = parser.add_mutually_exclusive_group()
+    action.add_argument("--open", action="store_true", help="Open the gripper.")
+    action.add_argument("--close", action="store_true", help="Close the gripper.")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_arg_parser()
+    args = parser.parse_args(argv)
+    if args.quit:
+        return 0
+    if not (args.open or args.close or args.state):
+        parser.print_help()
+        return 0
+
+    config = yaml.safe_load(Path("configs/robot/x5_config.yaml").read_text()) or {}
+    gripper_config = dict(config["robot"]["gripper"])
+    for key in ("port", "baudrate", "force", "init_timeout_s"):
+        value = getattr(args, key)
+        if value is not None:
+            gripper_config[key] = value
+    if args.gripper_id is not None:
+        gripper_config["gripper_id"] = args.gripper_id
+
+    service = GripperService(gripper_config)
+    try:
+        service.initialize()
+        if args.open:
+            service.execute(SetGripperCommand(position=1.0, wait=True))
+            print("Opened gripper.")
+        elif args.close:
+            service.execute(SetGripperCommand(position=0.0, wait=True))
+            print("Closed gripper.")
+        if args.state:
+            print(json.dumps(service.get_state().model_dump(), indent=2))
+        return 0
+    finally:
+        service.shutdown()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

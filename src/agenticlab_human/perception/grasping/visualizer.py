@@ -38,6 +38,8 @@ def visualize_manifest(manifest: dict[str, Any]) -> Path:
     grasps = GraspGroup(np.asarray(grasp_rows, dtype=np.float64))
     grasps = grasps.nms()
     grasps.sort_by_score()
+    # select the best grasp
+    grasps = grasps[:1]
     grippers = grasps.to_open3d_geometry_list()
 
     duration_s = max(0.0, float(manifest["visualize_seconds"]))

@@ -1,5 +1,5 @@
 ObjDetector:
-  method: "vlm" # Options: "vlm", "langsam", "qwen_local", "molmo_local", "yolo_world"
+  method: "vlm" # Options: "vlm", "langsam", "qwen_local", "molmo_local", "yolo"
   # output_dir: "output/obj_detector"
   # vlm_model: "qwen:qwen-vl-max"
   vlm_model: "qwen:qwen3-vl-plus-2025-12-19"
@@ -14,9 +14,10 @@ ObjDetector:
   molmo_prompt_path: "configs/prompt/detect_obj_molmo_prompt.txt"
   max_iterations: 5
 
-YoloWorldDetector:
+YOLODETECTOR:
+  # Use the fine-tuned checkpoint for real execution; generic YOLO checkpoints
+  # are only for local smoke tests.
   model_path: "yolo26s.pt"
-  model_type: "auto"  # auto/world/yoloe/regular
   confidence: 0.001
   image_size: 1280
-  output_dir: "output/perception/yolo_world"
+  output_dir: "output/perception/yolo_detector"
