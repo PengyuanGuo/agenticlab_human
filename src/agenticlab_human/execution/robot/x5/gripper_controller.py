@@ -130,7 +130,7 @@ class X5Gripper(Protocol):
 
     def execute(self, command: SetGripperCommand) -> None: ...
 
-    def get_state(self) -> GripperState: ...
+    def get_state(self) -> GripperState | dict[str, GripperState]: ...
 
     def health(self) -> ComponentHealth: ...
 
@@ -336,9 +336,98 @@ class MockGripperService:
             self._state.moving = False
 
 
+class MultiGripperService:
+    """Route arm-scoped gripper commands to left/right gripper services."""
+
+    def __init__(
+        self,
+        services: Mapping[str, X5Gripper],
+        *,
+        default_arm: str = "left",
+    ) -> None:
+        if not services:
+            raise ValueError("at least one gripper service is required")
+        self._services = {
+            str(arm): service
+            for arm, service in services.items()
+        }
+        self._default_arm = str(default_arm)
+        if self._default_arm not in self._services:
+            self._default_arm = next(iter(self._services))
+
+    def initialize(self) -> None:
+        initialized: list[X5Gripper] = []
+        try:
+            for service in self._services.values():
+                service.initialize()
+                initialized.append(service)
+        except Exception:
+            for service in reversed(initialized):
+                try:
+                    service.shutdown()
+                except Exception:
+                    pass
+            raise
+
+    def execute(self, command: SetGripperCommand) -> None:
+        self._service_for(command.arm).execute(command)
+
+    def get_state(self) -> dict[str, GripperState]:
+        states: dict[str, GripperState] = {}
+        for arm, service in self._services.items():
+            state = service.get_state()
+            if isinstance(state, dict):
+                state = state[arm]
+            states[arm] = state
+        return states
+
+    def default_state(self) -> GripperState:
+        state = self._service_for(self._default_arm).get_state()
+        if isinstance(state, dict):
+            return state[self._default_arm]
+        return state
+
+    def health(self) -> ComponentHealth:
+        health_by_arm = {
+            arm: service.health()
+            for arm, service in self._services.items()
+        }
+        ready = all(health.ready for health in health_by_arm.values())
+        detail = "; ".join(
+            f"{arm}: {health.detail}"
+            for arm, health in health_by_arm.items()
+        )
+        backends = ",".join(
+            f"{arm}={health.backend}"
+            for arm, health in health_by_arm.items()
+        )
+        return ComponentHealth(
+            ready=ready,
+            backend=f"multi({backends})",
+            detail=detail,
+        )
+
+    def shutdown(self) -> None:
+        for service in self._services.values():
+            service.shutdown()
+
+    def _service_for(self, arm: str) -> X5Gripper:
+        try:
+            return self._services[str(arm)]
+        except KeyError as exc:
+            raise ValueError(f"gripper is not configured for arm: {arm}") from exc
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Directly control the X5 Dahuan gripper on the Server PC.",
+    )
+    parser.add_argument("--config", default="configs/robot/x5_config.yaml")
+    parser.add_argument(
+        "--arm",
+        choices=("left", "right"),
+        default="left",
+        help="Configured gripper arm to control.",
     )
     parser.add_argument(
         "--port",
@@ -349,7 +438,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--force", type=int, help="Grip force override in [20, 100].")
     parser.add_argument("--init-timeout-s", type=float, help="Initialization timeout.")
     parser.add_argument("--state", action="store_true", help="Print gripper state.")
-    parser.add_argument("--quit", action="store_true", help="Exit without touching the gripper.")
+    parser.add_argument(
+        "--quit",
+        action="store_true",
+        help="Exit without touching the gripper.",
+    )
 
     action = parser.add_mutually_exclusive_group()
     action.add_argument("--open", action="store_true", help="Open the gripper.")
@@ -366,8 +459,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help()
         return 0
 
-    config = yaml.safe_load(Path("configs/robot/x5_config.yaml").read_text()) or {}
-    gripper_config = dict(config["robot"]["gripper"])
+    config = yaml.safe_load(Path(args.config).read_text()) or {}
+    gripper_config = _select_cli_gripper_config(config, args.arm, parser)
     for key in ("port", "baudrate", "force", "init_timeout_s"):
         value = getattr(args, key)
         if value is not None:
@@ -379,16 +472,40 @@ def main(argv: list[str] | None = None) -> int:
     try:
         service.initialize()
         if args.open:
-            service.execute(SetGripperCommand(position=1.0, wait=True))
-            print("Opened gripper.")
+            service.execute(SetGripperCommand(arm=args.arm, position=1.0, wait=True))
+            print(f"Opened {args.arm} gripper.")
         elif args.close:
-            service.execute(SetGripperCommand(position=0.0, wait=True))
-            print("Closed gripper.")
+            service.execute(SetGripperCommand(arm=args.arm, position=0.0, wait=True))
+            print(f"Closed {args.arm} gripper.")
         if args.state:
             print(json.dumps(service.get_state().model_dump(), indent=2))
         return 0
     finally:
         service.shutdown()
+
+
+def _select_cli_gripper_config(
+    config: Mapping[str, Any],
+    arm: str,
+    parser: argparse.ArgumentParser,
+) -> dict[str, Any]:
+    robot_config = config.get("robot", {})
+    if not isinstance(robot_config, Mapping):
+        parser.error("config must contain robot mapping")
+
+    grippers_config = robot_config.get("grippers")
+    if isinstance(grippers_config, Mapping) and arm in grippers_config:
+        return dict(grippers_config[arm])
+
+    legacy_key = f"gripper-{arm}"
+    if legacy_key in robot_config:
+        return dict(robot_config[legacy_key])
+
+    if arm == "left" and "gripper" in robot_config:
+        return dict(robot_config["gripper"])
+
+    parser.error(f"no gripper config found for arm {arm!r}")
+    raise AssertionError("unreachable")
 
 
 if __name__ == "__main__":

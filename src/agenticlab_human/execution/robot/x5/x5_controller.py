@@ -94,6 +94,16 @@ class RealX5Controller:
             arm: _two_floats(config.get("head_joints_deg", self.DEFAULT_HEAD_JOINTS_DEG))
             for arm, config in self._arm_configs.items()
         }
+        self._torso_joints_deg = {
+            arm: _one_or_two_floats(
+                config.get(
+                    "torso_joints_deg",
+                    config.get("head_joints_deg", self.DEFAULT_HEAD_JOINTS_DEG),
+                ),
+                name="torso_joints_deg",
+            )
+            for arm, config in self._arm_configs.items()
+        }
         self._requested_tool_frame_nos = {
             arm: _tool_frame_no(config)
             for arm, config in self._arm_configs.items()
@@ -436,7 +446,11 @@ class RealX5Controller:
         current_deg = _joint_to_degrees(self._load_x5().get_cjoint(handle))
         self._check_joint_target(command.arm, current_deg, target_deg)
 
-        target = self._make_joint(command.arm, target_deg)
+        target = self._make_joint(
+            command.arm,
+            target_deg,
+            torso_joints_deg=command.torso_joints_deg,
+        )
         add_data = self._make_mov_point_add(command.speed_ratio)
         x5 = self._load_x5()
 
@@ -593,21 +607,37 @@ class RealX5Controller:
             raise RuntimeError("xapi returned an invalid reference Point")
         return point
 
-    def _make_joint(self, arm: str, joints_deg: Sequence[float]) -> Any:
+    def _make_joint(
+        self,
+        arm: str,
+        joints_deg: Sequence[float],
+        *,
+        torso_joints_deg: Sequence[float] | None = None,
+    ) -> Any:
         x5 = self._load_x5()
+        external_joints_deg = (
+            _one_or_two_floats(torso_joints_deg, name="torso_joints_deg")
+            if torso_joints_deg is not None
+            else self._torso_joints_deg.get(arm, self._head_joints_deg[arm])
+        )
         joint_cls = getattr(x5, "Joint", None)
+        values = list(joints_deg) + external_joints_deg
+        logger.info(
+            "X5 move_joints Joint constructor: arm=%s values=%s",
+            arm,
+            values,
+        )
         if joint_cls is None:
-            return list(joints_deg) + self._head_joints_deg[arm]
+            return values
 
-        # xapi Joint carries the 7 arm axes plus external axes. The last two
-        # values are the head joints on the current X5 setup; keep them stable
-        # across arm-only move_joints commands instead of implicitly zeroing them.
-        values9 = list(joints_deg) + self._head_joints_deg[arm]
+        # xapi Joint carries the 7 arm axes plus external axes. Left-arm
+        # pick/place keeps the configured two head joints. Right-arm pour can
+        # send only E2, producing an 8-value Joint and leaving E3 untouched.
         try:
-            return joint_cls(*values9)
+            return joint_cls(*values)
         except TypeError:
             try:
-                return joint_cls(*joints_deg)
+                joint = joint_cls(*joints_deg)
             except TypeError:
                 joint = joint_cls()
                 for name, value in zip(
@@ -616,7 +646,8 @@ class RealX5Controller:
                     strict=True,
                 ):
                     setattr(joint, name, float(value))
-                return joint
+            _set_external_joint_axes(joint, external_joints_deg)
+            return joint
 
     def _make_mov_point_add(self, speed_ratio: float) -> Any | None:
         mov_point_add_cls = getattr(self._load_x5(), "MovPointAdd", None)
@@ -691,13 +722,32 @@ def _normalize_joint_limits(
     return [(lower, upper) for lower, upper in limits]
 
 
-def _two_floats(values: Any) -> list[float]:
+def _two_floats(values: Any, *, name: str = "head_joints_deg") -> list[float]:
     if values is None:
-        raise ValueError("expected 2 head joint values, got None")
+        raise ValueError(f"expected 2 {name} values, got None")
     converted = [float(value) for value in values]
     if len(converted) != 2:
-        raise ValueError("head_joints_deg must contain exactly 2 values")
+        raise ValueError(f"{name} must contain exactly 2 values")
     return converted
+
+
+def _one_or_two_floats(
+    values: Any,
+    *,
+    name: str = "torso_joints_deg",
+) -> list[float]:
+    if values is None:
+        raise ValueError(f"expected 1 or 2 {name} values, got None")
+    converted = [float(value) for value in values]
+    if not 1 <= len(converted) <= 2:
+        raise ValueError(f"{name} must contain 1 or 2 values")
+    return converted
+
+
+def _set_external_joint_axes(joint: Any, external_joints_deg: Sequence[float]) -> None:
+    axis_names = ("e2", "e3")
+    for name, value in zip(axis_names, external_joints_deg, strict=False):
+        setattr(joint, name, float(value))
 
 
 def _six_finite_floats(values: Any) -> list[float]:

@@ -16,6 +16,10 @@ from agenticlab_human.execution.robot.x5.contracts import (
     ComponentHealth,
     RGBDFrame,
 )
+from agenticlab_human.execution.robot.x5.gripper_controller import (
+    MockGripperService,
+    MultiGripperService,
+)
 from agenticlab_human.execution.robot.x5.mock_controller import MockX5Controller
 from agenticlab_human.execution.robot.x5.server import create_app
 
@@ -139,6 +143,7 @@ def test_move_joints_returns_accepted_command_and_updated_state():
         result = client.move_joints(
             "left",
             target,
+            torso_joints_deg=[15.0],
             speed_ratio=0.2,
             request_id="test-move-left",
         )
@@ -146,6 +151,7 @@ def test_move_joints_returns_accepted_command_and_updated_state():
     assert result.success is True
     assert result.request_id == "test-move-left"
     assert result.accepted_command["type"] == "move_joints"
+    assert result.accepted_command["torso_joints_deg"] == [15.0]
     assert result.state_before.arms["left"].joints_rad == [0.0] * 7
     assert result.state_after.arms["left"].joints_rad == target
     assert result.state_after.arms["right"].joints_rad == [0.0] * 7
@@ -191,6 +197,7 @@ def test_single_gripper_command_round_trip_updates_robot_level_state():
     assert close_result.success is True
     assert close_result.accepted_command == {
         "type": "set_gripper",
+        "arm": "left",
         "position": 0.0,
         "wait": True,
     }
@@ -199,6 +206,38 @@ def test_single_gripper_command_round_trip_updates_robot_level_state():
     assert open_result.success is True
     assert open_result.state_after.gripper.position == 1.0
     assert open_result.state_after.gripper.raw_position == 1000
+
+
+def test_right_gripper_command_routes_to_right_gripper_state():
+    gripper = MultiGripperService(
+        {
+            "left": MockGripperService(),
+            "right": MockGripperService(),
+        },
+    )
+    app = create_app(
+        camera=MockRGBDCamera(width=64, height=48),
+        controller=MockX5Controller(),
+        gripper=gripper,
+    )
+    with TestClient(app) as transport:
+        client = X5HTTPClient("http://testserver", timeout_s=None, session=transport)
+
+        close_result = client.close_gripper(
+            arm="right",
+            request_id="test-close-right-gripper",
+        )
+
+    assert close_result.success is True
+    assert close_result.accepted_command == {
+        "type": "set_gripper",
+        "arm": "right",
+        "position": 0.0,
+        "wait": True,
+    }
+    assert close_result.state_after.gripper.position == 1.0
+    assert close_result.state_after.grippers["left"].position == 1.0
+    assert close_result.state_after.grippers["right"].position == 0.0
 
 
 def test_invalid_gripper_position_is_rejected_by_contract():

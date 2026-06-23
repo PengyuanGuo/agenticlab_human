@@ -21,6 +21,7 @@ from agenticlab_human.execution.robot.x5.x5_controller import RealX5Controller
 
 class FakeJoint:
     def __init__(self, *values):
+        self.value_count = len(values)
         names = ("j1", "j2", "j3", "j4", "j5", "j6", "e1", "e2", "e3")
         for name, value in zip(names, values):
             setattr(self, name, float(value))
@@ -336,6 +337,55 @@ def test_real_x5_controller_moves_small_joint_delta_with_movpointadd():
     assert add_data.vel == 5
     assert add_data.acc == 5
     assert ("wait_move_done", 0, 60000) in fake_x5.calls
+
+
+def test_real_x5_controller_move_joints_can_override_right_torso_e2_axis():
+    fake_x5 = FakeX5API()
+    fake_x5.tool_frames[0] = FakePose()
+    controller = RealX5Controller(
+        {
+            "right": {
+                "robot_ip": "192.168.1.8",
+                "torso_joints_deg": [0.0],
+            }
+        },
+        x5_api=fake_x5,
+        max_command_speed_ratio=0.1,
+        max_joint_delta_deg=250.0,
+        joint_limits_deg=[
+            [-170.0, 170.0],
+            [-30.0, 90.0],
+            [-155.0, 155.0],
+            [-30.0, 120.0],
+            [-168.0, 168.0],
+            [-30.0, 100.0],
+            [-170.0, 170.0],
+        ],
+    )
+    controller.initialize()
+
+    controller.execute(
+        MoveJointsCommand(
+            arm="right",
+            joints_rad=[
+                math.radians(value)
+                for value in [74.0, 32.0, 0.0, 99.0, -100.0, 77.0, 46.0]
+            ],
+            torso_joints_deg=[15.0],
+            speed_ratio=0.05,
+            wait=True,
+        )
+    )
+
+    movj_call = next(call for call in fake_x5.calls if call[0] == "movj")
+    _, handle, target_joint, add_data = movj_call
+    assert handle == 0
+    assert target_joint.j1 == pytest.approx(74.0)
+    assert target_joint.e1 == pytest.approx(46.0)
+    assert target_joint.e2 == pytest.approx(15.0)
+    assert target_joint.e3 == pytest.approx(0.0)
+    assert target_joint.value_count == 8
+    assert add_data.vel == 5
 
 
 def test_real_x5_controller_rejects_large_joint_delta_before_movj():

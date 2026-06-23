@@ -99,6 +99,7 @@ class X5HTTPClient:
         arm: str,
         joints_rad: list[float],
         *,
+        torso_joints_deg: list[float] | None = None,
         speed_ratio: float = 0.1,
         wait: bool = True,
         request_id: str | None = None,
@@ -107,6 +108,7 @@ class X5HTTPClient:
             MoveJointsCommand(
                 arm=arm,
                 joints_rad=joints_rad,
+                torso_joints_deg=torso_joints_deg,
                 speed_ratio=speed_ratio,
                 wait=wait,
             ),
@@ -162,31 +164,34 @@ class X5HTTPClient:
         self,
         position: float,
         *,
+        arm: str = "left",
         wait: bool = True,
         request_id: str | None = None,
     ) -> RobotCommandResponse:
-        """Set the single gripper position: 0.0 closed, 1.0 fully open."""
+        """Set one gripper position: 0.0 closed, 1.0 fully open."""
 
         return self.send_command(
-            SetGripperCommand(position=position, wait=wait),
+            SetGripperCommand(arm=arm, position=position, wait=wait),
             request_id=request_id,
         )
 
     def close_gripper(
         self,
         *,
+        arm: str = "left",
         wait: bool = True,
         request_id: str | None = None,
     ) -> RobotCommandResponse:
-        return self.set_gripper(0.0, wait=wait, request_id=request_id)
+        return self.set_gripper(0.0, arm=arm, wait=wait, request_id=request_id)
 
     def open_gripper(
         self,
         *,
+        arm: str = "left",
         wait: bool = True,
         request_id: str | None = None,
     ) -> RobotCommandResponse:
-        return self.set_gripper(1.0, wait=wait, request_id=request_id)
+        return self.set_gripper(1.0, arm=arm, wait=wait, request_id=request_id)
 
     def close(self) -> None:
         if self._owns_session and hasattr(self._session, "close"):

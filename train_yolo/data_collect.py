@@ -27,7 +27,7 @@ AGENTICLAB_CLASSES = (
     "paper_cup",
     "yellow_bin",
 )
-SUPPORTED_CAMERAS = ("Orbbec", "FemtoBolt", "Gemini305")
+SUPPORTED_CAMERAS = ("Orbbec", "FemtoBolt", "Gemini305", "Gemini335")
 
 
 def _repo_root() -> Path:

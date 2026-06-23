@@ -112,7 +112,7 @@ class RemoteX5ActionBackend:
                     f"X5 server robot is not ready: {health.robot.detail}"
                 )
             _require_success(
-                self._client.open_gripper(wait=True),
+                self._client.open_gripper(arm=self.arm, wait=True),
                 "open gripper during initialize",
             )
         except Exception:
@@ -382,12 +382,12 @@ class RemoteX5ActionBackend:
         return _response_summary(step, response)
 
     def _close_gripper(self) -> dict[str, Any]:
-        response = self._client.close_gripper(wait=True)
+        response = self._client.close_gripper(arm=self.arm, wait=True)
         _require_success(response, "close gripper")
         return _response_summary("close_gripper", response)
 
     def _open_gripper(self) -> dict[str, Any]:
-        response = self._client.open_gripper(wait=True)
+        response = self._client.open_gripper(arm=self.arm, wait=True)
         _require_success(response, "open gripper")
         return _response_summary("open_gripper", response)
 

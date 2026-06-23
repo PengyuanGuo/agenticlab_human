@@ -1,7 +1,10 @@
+import math
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
+import yaml
 
 from agenticlab_human.execution.robot.x5.x5_remote_backend import (
     RemoteX5ActionBackend,
@@ -15,8 +18,9 @@ from agenticlab_human.perception.backend.grasp_backend import GraspCandidate
 
 ROBOT_CONFIG = "configs/robot/x5_config.yaml"
 CAMERA_CONFIG = "configs/perception/camera_config.yaml"
-HOME_JOINTS_DEG = [-24, 10, -53, 102, 101, 80, -18]
-CHECK_GRIPPER_JOINTS_DEG = [-15, 24, -64, 89, 44, 74, -2]
+_ROBOT_DOCUMENT = yaml.safe_load(Path(ROBOT_CONFIG).read_text())
+HOME_JOINTS_DEG = _ROBOT_DOCUMENT["robot"]["left"]["home_joints_deg"]
+CHECK_GRIPPER_JOINTS_DEG = _ROBOT_DOCUMENT["robot"]["left"]["check_gripper_joints_deg"]
 
 
 class FakeX5HTTPClient:
@@ -57,15 +61,15 @@ class FakeX5HTTPClient:
             return self._response(success=False, error="movel rejected")
         return self._response()
 
-    def close_gripper(self, *, wait):
-        self.calls.append(("close_gripper", wait))
+    def close_gripper(self, *, wait, arm="left"):
+        self.calls.append(("close_gripper", arm, wait))
         if self.fail_step == "close_gripper":
             return self._response(success=False, error="close rejected")
         return self._response()
 
-    def open_gripper(self, *, wait):
+    def open_gripper(self, *, wait, arm="left"):
         self.open_count += 1
-        self.calls.append(("open_gripper", wait))
+        self.calls.append(("open_gripper", arm, wait))
         if self.fail_step == "initialize_open" and self.open_count == 1:
             return self._response(success=False, error="initial open rejected")
         if self.fail_step == "place_open" and self.open_count == 2:
@@ -90,7 +94,12 @@ class FakeX5HTTPClient:
             error=error,
             request_id=f"fake-{self.response_count}",
             duration_ms=1.0,
-            state_after=SimpleNamespace(arms={"left": arm_state}),
+            state_after=SimpleNamespace(
+                arms={
+                    "left": arm_state,
+                    "right": arm_state,
+                },
+            ),
         )
 
 
@@ -192,6 +201,27 @@ def test_initialize_opens_gripper():
     backend.initialize()
 
     assert [call[0] for call in client.calls] == ["health", "open_gripper"]
+    assert client.calls[-1] == ("open_gripper", "left", True)
+
+
+def test_right_backend_routes_gripper_commands_to_right_arm():
+    client = FakeX5HTTPClient()
+    backend = RemoteX5ActionBackend(
+        ROBOT_CONFIG,
+        CAMERA_CONFIG,
+        arm="right",
+        client=client,
+    )
+
+    backend.initialize()
+    result = backend.pick("number-block", grasp_candidates=[_known_grasp()])
+
+    assert result.success is True
+    gripper_calls = [call for call in client.calls if call[0].endswith("_gripper")]
+    assert gripper_calls == [
+        ("open_gripper", "right", True),
+        ("close_gripper", "right", True),
+    ]
 
 
 def test_initialize_fails_when_gripper_cannot_open():
@@ -228,7 +258,7 @@ def test_pick_executes_home_approach_grasp_close_in_order():
 
 def test_joint_target_is_split_into_server_safe_steps():
     client = FakeX5HTTPClient()
-    client.joints_rad[0] = np.radians(-12.0)
+    client.joints_rad[0] = np.radians(120.0)
     backend = _backend(client)
     backend.initialize()
 
@@ -236,11 +266,15 @@ def test_joint_target_is_split_into_server_safe_steps():
 
     assert result.success is True
     home_calls = [call for call in client.calls if call[0] == "move_joints"]
-    assert len(home_calls) == 3
-    np.testing.assert_allclose(
-        [np.degrees(call[2][0]) for call in home_calls],
-        [-16.0, -20.0, -24.0],
+    assert len(home_calls) == math.ceil(
+        abs(HOME_JOINTS_DEG[0] - 120.0) / backend.config.home_max_step_deg
     )
+    previous = 120.0
+    for call in home_calls:
+        current = np.degrees(call[2][0])
+        assert abs(current - previous) <= backend.config.home_max_step_deg
+        previous = current
+    np.testing.assert_allclose(np.degrees(home_calls[-1][2]), HOME_JOINTS_DEG)
 
 
 def test_pick_failure_stops_robot():

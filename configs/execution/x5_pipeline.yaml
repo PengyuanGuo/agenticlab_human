@@ -14,7 +14,7 @@ pipeline:
 detector:
   type: yolo
   # Use the trained closed-set tabletop checkpoint for real X5 execution.
-  model_path: train_yolo/runs/train/tabletop_blocks_cup_bin_001_yolo26s/weights/best.pt
+  model_path: train_yolo/runs/agenticlab_objects_6cls_red_bin_yolo26s_ndjson_3/weights/best.pt
   confidence: 0.25
   image_size: 960
 

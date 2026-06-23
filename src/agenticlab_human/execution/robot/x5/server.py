@@ -7,6 +7,7 @@ import asyncio
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,7 @@ from agenticlab_human.execution.robot.x5.contracts import (
 )
 from agenticlab_human.execution.robot.x5.gripper_controller import (
     GripperService,
+    MultiGripperService,
     MockGripperService,
     X5Gripper,
 )
@@ -113,13 +115,23 @@ class HardwareRuntime:
         )
 
     async def robot_state(self) -> RobotState:
-        arm_state, gripper_state = await asyncio.gather(
+        arm_state, gripper_state_or_map = await asyncio.gather(
             self._robot_call(self.controller.get_state),
             self._gripper_call(self.gripper.get_state),
         )
+        if isinstance(gripper_state_or_map, dict):
+            grippers = gripper_state_or_map
+            gripper_state = grippers.get("left") or next(
+                iter(grippers.values()),
+                None,
+            )
+        else:
+            grippers = {}
+            gripper_state = gripper_state_or_map
         return RobotState(
             arms=arm_state.arms,
             gripper=gripper_state,
+            grippers=grippers,
             timestamp_ns=time.time_ns(),
         )
 
@@ -277,10 +289,7 @@ def create_app_from_config(config_path: str = DEFAULT_CONFIG_PATH) -> tuple[Fast
             joint_limits_deg=robot_config.get("joint_limits_deg"),
             stop_on_shutdown=bool(robot_config.get("stop_on_shutdown", False)),
         )
-        gripper_config = robot_config.get("gripper", {})
-        if not gripper_config.get("enabled", False):
-            raise ValueError("robot.gripper.enabled must be true for X5 deployment")
-        gripper = GripperService(gripper_config)
+        gripper = _build_x5_gripper_service(robot_config)
     else:
         raise ValueError(f"unsupported robot backend: {robot_backend}")
     return (
@@ -310,6 +319,7 @@ def _build_x5_arm_configs(robot_config: dict[str, Any]) -> dict[str, dict[str, A
         for key in (
             "robot_ip",
             "head_joints_deg",
+            "torso_joints_deg",
             "tf_no",
             "tool_frame",
         ):
@@ -317,8 +327,53 @@ def _build_x5_arm_configs(robot_config: dict[str, Any]) -> dict[str, dict[str, A
                 arm_config[key] = robot_config[key]
         if "head_joints_deg" in arm_config:
             arm_config["head_joints_deg"] = _first_two_values(arm_config["head_joints_deg"])
+        if "torso_joints_deg" in arm_config:
+            arm_config["torso_joints_deg"] = _first_one_or_two_values(
+                arm_config["torso_joints_deg"]
+            )
         arm_configs[arm_name] = arm_config
     return arm_configs
+
+
+def _build_x5_gripper_service(robot_config: dict[str, Any]) -> X5Gripper:
+    grippers_config = robot_config.get("grippers")
+    if isinstance(grippers_config, Mapping) and grippers_config:
+        services = {
+            str(arm): _build_single_gripper_service(config, f"robot.grippers.{arm}")
+            for arm, config in grippers_config.items()
+        }
+        return MultiGripperService(
+            services,
+            default_arm=str(robot_config.get("default_gripper_arm", "left")),
+        )
+
+    legacy_services = {}
+    for arm in ("left", "right"):
+        legacy_key = f"gripper-{arm}"
+        if legacy_key in robot_config:
+            legacy_services[arm] = _build_single_gripper_service(
+                robot_config[legacy_key],
+                f"robot.{legacy_key}",
+            )
+    if legacy_services:
+        return MultiGripperService(legacy_services)
+
+    gripper_config = robot_config.get("gripper", {})
+    return _build_single_gripper_service(gripper_config, "robot.gripper")
+
+
+def _build_single_gripper_service(
+    gripper_config: Mapping[str, Any],
+    config_name: str,
+) -> X5Gripper:
+    gripper_backend = str(gripper_config.get("backend", "dahuan-modbus"))
+    if gripper_backend == "mock":
+        return MockGripperService()
+    if gripper_backend in {"dahuan", "dahuan-modbus"}:
+        if not gripper_config.get("enabled", False):
+            raise ValueError(f"{config_name}.enabled must be true for X5 deployment")
+        return GripperService(gripper_config)
+    raise ValueError(f"unsupported gripper backend in {config_name}: {gripper_backend}")
 
 
 def _first_two_values(values: Any) -> list[float]:
@@ -326,6 +381,13 @@ def _first_two_values(values: Any) -> list[float]:
     if len(converted) < 2:
         raise ValueError("expected at least 2 head joint values")
     return converted[:2]
+
+
+def _first_one_or_two_values(values: Any) -> list[float]:
+    converted = [float(value) for value in values]
+    if not 1 <= len(converted) <= 2:
+        raise ValueError("expected 1 or 2 torso joint values")
+    return converted
 
 
 def main() -> None:

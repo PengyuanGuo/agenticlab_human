@@ -107,6 +107,7 @@ class GripperState(BaseModel):
 class RobotState(BaseModel):
     arms: Dict[str, ArmState]
     gripper: Optional[GripperState] = None
+    grippers: Dict[str, GripperState] = Field(default_factory=dict)
     timestamp_ns: int
 
 
@@ -119,8 +120,34 @@ class MoveJointsCommand(BaseModel):
     type: Literal["move_joints"] = "move_joints"
     arm: ArmName
     joints_rad: list[float] = Field(min_length=7, max_length=7)
+    torso_joints_deg: Optional[list[float]] = Field(
+        default=None,
+        min_length=1,
+        max_length=2,
+    )
     speed_ratio: float = Field(default=0.1, gt=0.0, le=1.0)
     wait: bool = True
+
+    @field_validator("joints_rad")
+    @classmethod
+    def validate_finite_joints(cls, values: list[float]) -> list[float]:
+        converted = [float(value) for value in values]
+        if not all(np.isfinite(value) for value in converted):
+            raise ValueError("joints_rad values must be finite")
+        return converted
+
+    @field_validator("torso_joints_deg")
+    @classmethod
+    def validate_finite_torso(
+        cls,
+        values: Optional[list[float]],
+    ) -> Optional[list[float]]:
+        if values is None:
+            return None
+        converted = [float(value) for value in values]
+        if not all(np.isfinite(value) for value in converted):
+            raise ValueError("torso_joints_deg values must be finite")
+        return converted
 
 
 class CartesianPointCommand(BaseModel):
@@ -154,9 +181,10 @@ class StopCommand(BaseModel):
 
 
 class SetGripperCommand(BaseModel):
-    """Set the single gripper position: 0.0 closed, 1.0 fully open."""
+    """Set one gripper position: 0.0 closed, 1.0 fully open."""
 
     type: Literal["set_gripper"] = "set_gripper"
+    arm: ArmName = "left"
     position: float = Field(ge=0.0, le=1.0)
     wait: bool = True
 
