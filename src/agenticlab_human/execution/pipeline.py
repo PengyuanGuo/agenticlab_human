@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Sequence
@@ -13,12 +14,13 @@ import numpy as np
 import yaml
 from PIL import Image
 
-from agenticlab_human.core.action_sequence import Action
+from agenticlab_human.core.action_sequence import Action, ActionSequence
 from agenticlab_human.execution.action import ActionExecutor
 from agenticlab_human.execution.action_backend import ActionResult, ExecutionReport
 from agenticlab_human.execution.execution_context import ExecutionContext
 from agenticlab_human.execution.pipeline_types import SceneSnapshot
 from agenticlab_human.execution.place_target import estimate_place_target
+from agenticlab_human.execution.pour import move_joint_target
 from agenticlab_human.execution.robot.x5.client import (
     X5HTTPClient,
     save_rgbd_frame,
@@ -38,6 +40,27 @@ from agenticlab_human.perception.grasping.http_backend import GraspNetHTTPBacken
 DEFAULT_PIPELINE_CONFIG = "configs/execution/x5_pipeline.yaml"
 
 
+@dataclass(frozen=True)
+class PlaceSupportArmMotion:
+    """Pipeline-level right-arm posture motion around left-arm place."""
+
+    arm: str
+    home_joints_deg: list[float]
+    home_torso_deg: list[float]
+    place_torso_deg: list[float]
+    speed_ratio: float
+    max_joint_delta_deg: float
+
+
+@dataclass(frozen=True)
+class PickGripVerification:
+    """Pipeline-level grip-status check after each single pick attempt."""
+
+    arm: str
+    expected_grip_status: int
+    max_retries: int
+
+
 class ExecutionRuntime:
     """State retained across one X5 pick-and-place session."""
 
@@ -51,6 +74,8 @@ class ExecutionRuntime:
         run_dir: Path,
         place_depth_patch_px: int,
         place_offset_world_x_m: float,
+        place_support_motion: PlaceSupportArmMotion | None = None,
+        pick_grip_verification: PickGripVerification | None = None,
     ) -> None:
         self.x5_client = x5_client
         self.detector = detector
@@ -59,6 +84,13 @@ class ExecutionRuntime:
         self.run_dir = Path(run_dir)
         self.place_depth_patch_px = int(place_depth_patch_px)
         self.place_offset_world_x_m = float(place_offset_world_x_m)
+        self.place_support_motion = place_support_motion
+        self.place_support_current_torso_deg = (
+            list(place_support_motion.home_torso_deg)
+            if place_support_motion is not None
+            else None
+        )
+        self.pick_grip_verification = pick_grip_verification
         self.T_world_camera = np.asarray(
             action_backend.T_world_camera,
             dtype=float,
@@ -109,6 +141,19 @@ class ExecutionRuntime:
         self._next_action_id += 1
         return action_id
 
+    def claim_action_id(self, action_id: int | None = None) -> int:
+        if action_id is None:
+            return self.next_action_id()
+        claimed = int(action_id)
+        if claimed <= 0:
+            raise ValueError("action_id must be positive")
+        self._next_action_id = max(self._next_action_id, claimed + 1)
+        return claimed
+
+    def action_stage_dir(self, action_id: int, action_name: str) -> Path:
+        stage_name = f"action_{action_id:03d}_{_path_slug(action_name)}"
+        return self.run_dir / stage_name
+
     def require_initialized(self) -> None:
         if not self._initialized:
             raise RuntimeError("ExecutionRuntime is not initialized")
@@ -140,12 +185,18 @@ def capture_scene_from_x5_server(
 def execute_pick(
     runtime: ExecutionRuntime,
     object_name: str,
+    *,
+    action_id: int | None = None,
+    from_name: str | None = None,
+    pddl_str: str | None = None,
 ) -> ActionResult:
     """Capture, detect, request a grasp, and execute one pick action."""
 
+    claimed_action_id: int | None = None
     try:
         runtime.require_initialized()
-        stage_dir = runtime.run_dir / "pick"
+        claimed_action_id = runtime.claim_action_id(action_id)
+        stage_dir = runtime.action_stage_dir(claimed_action_id, "pick")
         snapshot = capture_scene_from_x5_server(runtime.x5_client, stage_dir)
         rgb_image = Image.fromarray(snapshot.frame.rgb, mode="RGB")
         detection = runtime.detector.detect(rgb_image, [object_name])
@@ -169,41 +220,266 @@ def execute_pick(
         runtime.context.grasps[object_name] = grasps
         runtime.context.object_states.setdefault(object_name, {})["stale"] = False
         runtime.context.stale_objects.discard(object_name)
+        action_args = {"object": object_name}
+        if from_name:
+            action_args["from"] = from_name
         action = Action(
-            id=runtime.next_action_id(),
+            id=claimed_action_id,
             name="pick",
-            args={"object": object_name},
+            args=action_args,
+            pddl_str=pddl_str,
         )
         result = runtime.executor.execute_action(action)
         result.metadata.setdefault("scene", snapshot.to_dict())
+        result.metadata.setdefault("stage_dir", str(stage_dir))
         if result.success:
             runtime.held_object = object_name
         return result
     except Exception as exc:
-        return _failed_action("pick", object_name, str(exc))
+        return _failed_action(
+            "pick",
+            object_name,
+            str(exc),
+            action_id=claimed_action_id or action_id,
+        )
+
+
+def _open_gripper_before_pick_retry(
+    runtime: ExecutionRuntime,
+    arm: str,
+    *,
+    previous_grip_status: int | None,
+) -> list[dict[str, Any]]:
+    max_open_attempts = 2 if previous_grip_status == 3 else 1
+    completed_steps: list[dict[str, Any]] = []
+    last_error: str | None = None
+    for open_attempt in range(1, max_open_attempts + 1):
+        response = runtime.x5_client.open_gripper(arm=arm, wait=True)
+        success = bool(getattr(response, "success", False))
+        error = getattr(response, "error", None)
+        completed_steps.append(
+            {
+                "step": "open_gripper_before_pick_retry",
+                "arm": arm,
+                "attempt": open_attempt,
+                "previous_grip_status": previous_grip_status,
+                "success": success,
+                "error": error,
+                "request_id": getattr(response, "request_id", None),
+                "duration_ms": getattr(response, "duration_ms", None),
+            }
+        )
+        if success:
+            return completed_steps
+        last_error = error or f"open {arm} gripper before pick retry failed"
+
+    raise RuntimeError(last_error or f"open {arm} gripper before pick retry failed")
+
+
+def _check_pick_grip_status(
+    runtime: ExecutionRuntime,
+    verification: PickGripVerification,
+) -> dict[str, Any]:
+    try:
+        response = runtime.x5_client.get_state(verification.arm)
+    except Exception as exc:
+        return {
+            "success": False,
+            "retryable": False,
+            "arm": verification.arm,
+            "expected_grip_status": verification.expected_grip_status,
+            "grip_status": None,
+            "error": f"get_state failed for {verification.arm}: {exc}",
+        }
+
+    if not response.success:
+        return {
+            "success": False,
+            "retryable": False,
+            "arm": verification.arm,
+            "expected_grip_status": verification.expected_grip_status,
+            "grip_status": None,
+            "error": response.error or f"get_state failed for {verification.arm}",
+        }
+
+    grip_status = _grip_status_from_state_response(response, verification.arm)
+    if grip_status is None:
+        return {
+            "success": False,
+            "retryable": False,
+            "arm": verification.arm,
+            "expected_grip_status": verification.expected_grip_status,
+            "grip_status": None,
+            "error": f"grip_status is unavailable for {verification.arm}",
+        }
+
+    success = int(grip_status) == verification.expected_grip_status
+    return {
+        "success": success,
+        "retryable": not success,
+        "arm": verification.arm,
+        "expected_grip_status": verification.expected_grip_status,
+        "grip_status": int(grip_status),
+        "error": (
+            None
+            if success
+            else (
+                f"grip_status={int(grip_status)}, "
+                f"expected {verification.expected_grip_status}"
+            )
+        ),
+    }
+
+
+def _grip_status_from_state_response(response: Any, arm: str) -> int | None:
+    state_after = _field_value(response, "state_after")
+    grippers = _field_value(state_after, "grippers")
+    if grippers:
+        gripper_state = (
+            grippers.get(arm)
+            if hasattr(grippers, "get")
+            else None
+        )
+        status = _field_value(gripper_state, "grip_status")
+        if status is not None:
+            return int(status)
+
+    gripper = _field_value(state_after, "gripper")
+    status = _field_value(gripper, "grip_status")
+    return None if status is None else int(status)
+
+
+def _field_value(value: Any, key: str) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return value.get(key)
+    return getattr(value, key, None)
+
+
+def _execute_pick_with_grip_retry(
+    runtime: ExecutionRuntime,
+    object_name: str,
+    *,
+    action_id: int | None = None,
+    from_name: str | None = None,
+    pddl_str: str | None = None,
+) -> ActionResult:
+    verification = runtime.pick_grip_verification
+    max_retries = 0 if verification is None else verification.max_retries
+    attempts: list[dict[str, Any]] = []
+    result: ActionResult | None = None
+    public_action_id = action_id
+    previous_grip_status: int | None = None
+
+    for attempt_index in range(max_retries + 1):
+        retry_open_steps: list[dict[str, Any]] = []
+        if attempt_index > 0 and verification is not None:
+            try:
+                retry_open_steps = _open_gripper_before_pick_retry(
+                    runtime,
+                    verification.arm,
+                    previous_grip_status=previous_grip_status,
+                )
+            except Exception as exc:
+                failure = _failed_action(
+                    "pick",
+                    object_name,
+                    str(exc),
+                    action_id=public_action_id,
+                )
+                failure.metadata["pick_attempts"] = attempts
+                return failure
+
+        result = execute_pick(
+            runtime,
+            object_name,
+            action_id=action_id if attempt_index == 0 else None,
+            from_name=from_name,
+            pddl_str=pddl_str,
+        )
+        if public_action_id is None:
+            public_action_id = result.metadata.get("action_id")
+        attempts.append(
+            {
+                "attempt": attempt_index + 1,
+                "stage_dir": result.metadata.get("stage_dir"),
+                "success": result.success,
+                "error": result.error,
+            }
+        )
+        if retry_open_steps:
+            attempts[-1]["retry_open_steps"] = retry_open_steps
+        if not result.success:
+            result.metadata["action_id"] = public_action_id
+            result.metadata.setdefault("pick_attempts", attempts)
+            return result
+
+        if verification is None:
+            result.metadata["action_id"] = public_action_id
+            result.metadata.setdefault("pick_attempts", attempts)
+            return result
+
+        grip_check = _check_pick_grip_status(runtime, verification)
+        result.metadata["gripper_verification"] = grip_check
+        attempts[-1]["grip_status"] = grip_check.get("grip_status")
+        attempts[-1]["verified"] = grip_check["success"]
+        attempts[-1]["retryable"] = grip_check["retryable"]
+        previous_grip_status = grip_check.get("grip_status")
+        if grip_check["success"]:
+            result.metadata["action_id"] = public_action_id
+            result.metadata.setdefault("pick_attempts", attempts)
+            return result
+
+        runtime.held_object = None
+        if not grip_check["retryable"] or attempt_index >= max_retries:
+            result.success = False
+            result.error = (
+                "pick grip verification failed: "
+                f"{grip_check['error']}"
+            )
+            result.metadata["action_id"] = public_action_id
+            result.metadata.setdefault("pick_attempts", attempts)
+            return result
+
+    raise RuntimeError("unreachable pick retry state")
 
 
 def execute_place(
     runtime: ExecutionRuntime,
     object_name: str,
     target_name: str,
+    *,
+    action_id: int | None = None,
+    pddl_str: str | None = None,
 ) -> ActionResult:
     """Capture, estimate a place point, and execute one place action."""
 
+    claimed_action_id: int | None = None
     try:
         runtime.require_initialized()
+        claimed_action_id = runtime.claim_action_id(action_id)
         if runtime.held_object != object_name:
             raise RuntimeError(
                 f"place requires held_object={object_name!r}, "
                 f"got {runtime.held_object!r}"
             )
 
-        stage_dir = runtime.run_dir / "place"
+        stage_dir = runtime.action_stage_dir(claimed_action_id, "place")
+        right_place_pre_steps = _move_place_support_arm(
+            runtime,
+            step_name="right_place_pre_pose",
+            target_torso_deg=(
+                None
+                if runtime.place_support_motion is None
+                else runtime.place_support_motion.place_torso_deg
+            ),
+        )
         snapshot = capture_scene_from_x5_server(runtime.x5_client, stage_dir)
         rgb_image = Image.fromarray(snapshot.frame.rgb, mode="RGB")
         detection = runtime.detector.detect(rgb_image, [target_name])
         selected_detection, bbox = _select_detection(detection, target_name)
-        selected_detection.set_random_obj_point(margin_ratio=0.2)
+        selected_detection.set_random_obj_point(margin_ratio=0)
         target_pixel = selected_detection.get_object_center()
         if target_pixel is None:
             raise RuntimeError(f"no place pixel available for {target_name}")
@@ -225,19 +501,46 @@ def execute_place(
         target_state["stale"] = False
         runtime.context.stale_objects.discard(target_name)
         action = Action(
-            id=runtime.next_action_id(),
+            id=claimed_action_id,
             name="place",
             args={"object": object_name, "target": target_name},
+            pddl_str=pddl_str,
         )
         result = runtime.executor.execute_action(action)
         result.metadata.setdefault("scene", snapshot.to_dict())
         result.metadata.setdefault("place_target", place_target.to_dict())
+        result.metadata.setdefault("stage_dir", str(stage_dir))
+        if right_place_pre_steps is not None:
+            result.metadata.setdefault(
+                "right_arm_place_pre_steps",
+                right_place_pre_steps,
+            )
         completed_steps = result.metadata.get("completed_steps", [])
         released = any(
             step.get("step") == "open_gripper"
             for step in completed_steps
             if isinstance(step, dict)
         )
+        if result.success:
+            try:
+                right_home_steps = _move_place_support_arm(
+                    runtime,
+                    step_name="right_home_after_place",
+                    target_torso_deg=(
+                        None
+                        if runtime.place_support_motion is None
+                        else runtime.place_support_motion.home_torso_deg
+                    ),
+                )
+                if right_home_steps is not None:
+                    result.metadata.setdefault(
+                        "right_arm_home_steps",
+                        right_home_steps,
+                    )
+            except Exception as exc:
+                result.success = False
+                result.error = f"right arm home after place failed: {exc}"
+                result.metadata["right_arm_home_error"] = str(exc)
         if result.success or released:
             runtime.held_object = None
         return result
@@ -247,7 +550,154 @@ def execute_place(
             object_name,
             str(exc),
             target=target_name,
+            action_id=claimed_action_id or action_id,
         )
+
+
+def _move_place_support_arm(
+    runtime: ExecutionRuntime,
+    *,
+    step_name: str,
+    target_torso_deg: Sequence[float] | None,
+) -> list[dict[str, Any]] | None:
+    motion = runtime.place_support_motion
+    if motion is None or target_torso_deg is None:
+        return None
+    current_torso_deg = (
+        runtime.place_support_current_torso_deg
+        if runtime.place_support_current_torso_deg is not None
+        else motion.home_torso_deg
+    )
+    completed = move_joint_target(
+        runtime.x5_client,
+        arm=motion.arm,
+        target_joints_deg=motion.home_joints_deg,
+        target_torso_deg=target_torso_deg,
+        current_torso_deg=current_torso_deg,
+        speed_ratio=motion.speed_ratio,
+        max_joint_delta_deg=motion.max_joint_delta_deg,
+        step_name=step_name,
+    )
+    runtime.place_support_current_torso_deg = list(target_torso_deg)
+    return completed
+
+
+def execute_action_sequence(
+    runtime: ExecutionRuntime,
+    sequence: ActionSequence,
+) -> ExecutionReport:
+    """Execute a planner ActionSequence using per-action perception stages."""
+
+    results: list[ActionResult] = []
+    for action in sequence.actions:
+        if action.name == "pick":
+            object_name = action.args.get("object")
+            if not object_name:
+                result = _missing_sequence_arg(action, "object")
+            else:
+                result = _execute_pick_with_grip_retry(
+                    runtime,
+                    object_name,
+                    action_id=action.id,
+                    from_name=action.args.get("from"),
+                    pddl_str=action.pddl_str,
+                )
+        elif action.name == "place":
+            object_name = action.args.get("object")
+            target_name = action.args.get("target")
+            if not object_name:
+                result = _missing_sequence_arg(action, "object")
+            elif not target_name:
+                result = _missing_sequence_arg(action, "target")
+            else:
+                result = execute_place(
+                    runtime,
+                    object_name,
+                    target_name,
+                    action_id=action.id,
+                    pddl_str=action.pddl_str,
+                )
+        else:
+            result = ActionResult(
+                success=False,
+                action_name=action.name,
+                error=f"Unsupported action type: {action.name}",
+                metadata={"action_id": action.id, "args": action.args},
+            )
+
+        result.metadata.setdefault("action_id", action.id)
+        result.metadata.setdefault("action_args", dict(action.args))
+        if action.pddl_str:
+            result.metadata.setdefault("pddl_str", action.pddl_str)
+        results.append(result)
+        if not result.success:
+            break
+
+    failed_result = next((result for result in results if not result.success), None)
+    failed_action_id = None
+    if failed_result is not None:
+        failed_action_id = failed_result.metadata.get("action_id")
+    return ExecutionReport(
+        success=failed_result is None and len(results) == len(sequence.actions),
+        task=sequence.task,
+        total_actions=len(sequence.actions),
+        results=results,
+        prepared=True,
+        failed_action_id=failed_action_id,
+        failed_action_name=(
+            None if failed_result is None else failed_result.action_name
+        ),
+        error=None if failed_result is None else failed_result.error,
+        metadata={
+            "task_description": sequence.task_description,
+            "goal_conditions": sequence.goal_conditions,
+        },
+    )
+
+
+def execute_action_sequence_plan(
+    *,
+    plan_path: str,
+    config_path: str = DEFAULT_PIPELINE_CONFIG,
+) -> ExecutionReport:
+    """Load action_sequence.json and execute all supported pick/place actions."""
+
+    try:
+        sequence = ActionSequence.load(plan_path)
+        runtime = create_x5_execution_runtime(config_path=config_path)
+    except Exception as exc:
+        return ExecutionReport(
+            success=False,
+            task=Path(plan_path).stem,
+            total_actions=0,
+            failed_action_name="sequence-config",
+            error=str(exc),
+            metadata={"config_path": config_path, "plan_path": plan_path},
+        )
+
+    try:
+        with runtime:
+            report = execute_action_sequence(runtime, sequence)
+    except Exception as exc:
+        report = ExecutionReport(
+            success=False,
+            task=sequence.task,
+            total_actions=len(sequence.actions),
+            failed_action_name="sequence-initialize",
+            error=str(exc),
+            metadata={
+                "run_dir": str(runtime.run_dir),
+                "config_path": config_path,
+                "plan_path": plan_path,
+            },
+        )
+
+    report.metadata.setdefault("run_dir", str(runtime.run_dir))
+    report.metadata.setdefault("config_path", config_path)
+    report.metadata.setdefault("plan_path", plan_path)
+    _write_json(runtime.run_dir / "action_sequence.json", sequence.to_dict())
+    _write_json(runtime.run_dir / "execution_report.json", report.to_dict())
+    return report
 
 
 def execute_pipeline(
@@ -275,7 +725,7 @@ def execute_pipeline(
     report: ExecutionReport
     try:
         with runtime:
-            pick_result = execute_pick(runtime, object_name)
+            pick_result = _execute_pick_with_grip_retry(runtime, object_name)
             results.append(pick_result)
             if not pick_result.success:
                 report = _execution_report(
@@ -327,10 +777,24 @@ def create_x5_execution_runtime(
     pipeline_config = config.get("pipeline", {})
     detector_config = config.get("detector", {})
     grasp_config = config.get("grasp", {})
+    x5_pick_config = config.get("x5_pick", {})
     x5_place_config = config.get("x5_place", {})
     detector_type = str(detector_config.get("type", "yolo"))
     if detector_type != "yolo":
         raise ValueError("detector.type must be 'yolo' for the X5 pipeline")
+    robot_config_path = str(
+        pipeline_config.get(
+            "robot_config",
+            "configs/robot/x5_config.yaml",
+        )
+    )
+    camera_config_path = str(
+        pipeline_config.get(
+            "camera_config",
+            "configs/perception/camera_config.yaml",
+        )
+    )
+    robot_config = yaml.safe_load(Path(robot_config_path).read_text()) or {}
 
     place_offset = pipeline_config.get("place_offset_world_x_m")
     if place_offset is None:
@@ -381,18 +845,8 @@ def create_x5_execution_runtime(
         nms=bool(grasp_config.get("nms", True)),
     )
     runtime_action_backend = action_backend or RemoteX5ActionBackend(
-        robot_config_path=str(
-            pipeline_config.get(
-                "robot_config",
-                "configs/robot/x5_config.yaml",
-            )
-        ),
-        camera_config_path=str(
-            pipeline_config.get(
-                "camera_config",
-                "configs/perception/camera_config.yaml",
-            )
-        ),
+        robot_config_path=robot_config_path,
+        camera_config_path=camera_config_path,
         server_url=server_url,
         arm=pipeline_config.get("arm"),
         camera_name=pipeline_config.get("camera_name"),
@@ -415,6 +869,14 @@ def create_x5_execution_runtime(
             pipeline_config.get("place_depth_patch_px", 9)
         ),
         place_offset_world_x_m=place_offset,
+        place_support_motion=_load_place_support_motion(
+            robot_config,
+            x5_place_config,
+        ),
+        pick_grip_verification=_load_pick_grip_verification(
+            x5_pick_config,
+            default_arm=str(pipeline_config.get("arm", "left")),
+        ),
     )
     _write_json(
         run_dir / "run.json",
@@ -424,12 +886,106 @@ def create_x5_execution_runtime(
             "grasp_server_url": pipeline_config.get("grasp_server_url"),
             "camera_name": runtime_action_backend.camera_name,
             "place_offset_world_x_m": place_offset,
+            "pick_grip_verification": (
+                None
+                if runtime.pick_grip_verification is None
+                else {
+                    "arm": runtime.pick_grip_verification.arm,
+                    "expected_grip_status": (
+                        runtime.pick_grip_verification.expected_grip_status
+                    ),
+                    "max_retries": runtime.pick_grip_verification.max_retries,
+                }
+            ),
             "default_place_orientation_rotvec": (
                 runtime_action_backend.default_place_orientation_rotvec.tolist()
             ),
         },
     )
     return runtime
+
+
+def _load_place_support_motion(
+    robot_config: dict[str, Any],
+    x5_place_config: dict[str, Any],
+) -> PlaceSupportArmMotion | None:
+    if x5_place_config.get("support_arm_enabled", True) is False:
+        return None
+
+    robot = robot_config["robot"]
+    action_backend = robot_config.get("action_backend", {})
+    arm = str(x5_place_config.get("support_arm", "right"))
+    arm_config = robot[arm]
+    speed_ratio = _finite_float(
+        x5_place_config.get(
+            "support_arm_speed_ratio",
+            action_backend.get("home_speed_ratio", 0.1),
+        ),
+        "x5_place.support_arm_speed_ratio",
+    )
+    max_joint_delta_deg = _finite_float(
+        x5_place_config.get(
+            "support_arm_max_joint_delta_deg",
+            robot.get(
+                "max_joint_delta_deg",
+                action_backend.get("home_max_step_deg", 45.0),
+            ),
+        ),
+        "x5_place.support_arm_max_joint_delta_deg",
+    )
+    if speed_ratio <= 0.0:
+        raise ValueError("x5_place.support_arm_speed_ratio must be positive")
+    if max_joint_delta_deg <= 0.0:
+        raise ValueError(
+            "x5_place.support_arm_max_joint_delta_deg must be positive"
+        )
+
+    return PlaceSupportArmMotion(
+        arm=arm,
+        home_joints_deg=_required_vector(
+            arm_config,
+            "home_joints_deg",
+            7,
+            f"robot.{arm}.home_joints_deg",
+        ),
+        home_torso_deg=_required_vector(
+            arm_config,
+            "home_torso_deg",
+            (1, 2),
+            f"robot.{arm}.home_torso_deg",
+        ),
+        place_torso_deg=_required_vector(
+            arm_config,
+            "place_torso_deg",
+            (1, 2),
+            f"robot.{arm}.place_torso_deg",
+        ),
+        speed_ratio=speed_ratio,
+        max_joint_delta_deg=max_joint_delta_deg,
+    )
+
+
+def _load_pick_grip_verification(
+    x5_pick_config: dict[str, Any],
+    *,
+    default_arm: str,
+) -> PickGripVerification | None:
+    if x5_pick_config.get("verify_grip_status", True) is False:
+        return None
+
+    expected_status = int(x5_pick_config.get("expected_grip_status", 2))
+    if expected_status < 0 or expected_status > 3:
+        raise ValueError("x5_pick.expected_grip_status must be in [0, 3]")
+
+    max_retries = int(x5_pick_config.get("max_retries", 2))
+    if max_retries < 0:
+        raise ValueError("x5_pick.max_retries must be non-negative")
+
+    return PickGripVerification(
+        arm=str(x5_pick_config.get("gripper_arm", default_arm)),
+        expected_grip_status=expected_status,
+        max_retries=max_retries,
+    )
 
 
 def _select_detection(
@@ -495,15 +1051,27 @@ def _failed_action(
     error: str,
     *,
     target: str | None = None,
+    action_id: int | None = None,
 ) -> ActionResult:
     metadata: dict[str, Any] = {"object": object_name}
     if target is not None:
         metadata["target"] = target
+    if action_id is not None:
+        metadata["action_id"] = action_id
     return ActionResult(
         success=False,
         action_name=action_name,
         error=error,
         metadata=metadata,
+    )
+
+
+def _missing_sequence_arg(action: Action, arg_name: str) -> ActionResult:
+    return ActionResult(
+        success=False,
+        action_name=action.name,
+        error=f"Action {action.id} ({action.name}) is missing required arg: {arg_name}",
+        metadata={"action_id": action.id, "args": action.args},
     )
 
 
@@ -563,6 +1131,48 @@ def _finite_float(value: Any, name: str) -> float:
     return converted
 
 
+def _required_vector(
+    mapping: dict[str, Any],
+    key: str,
+    size: int | tuple[int, ...],
+    name: str,
+) -> list[float]:
+    if key not in mapping:
+        raise ValueError(f"{name} is required")
+    return _finite_vector(mapping[key], size, name).tolist()
+
+
+def _finite_vector(
+    values: Any,
+    size: int | tuple[int, ...],
+    name: str,
+) -> np.ndarray:
+    vector = np.asarray(values, dtype=float)
+    allowed_shapes = (
+        {(size,)}
+        if isinstance(size, int)
+        else {(candidate,) for candidate in size}
+    )
+    if vector.shape not in allowed_shapes or not np.all(np.isfinite(vector)):
+        expected = (
+            str(size)
+            if isinstance(size, int)
+            else " or ".join(str(candidate) for candidate in size)
+        )
+        raise ValueError(f"{name} must contain {expected} finite values")
+    return vector
+
+
+def _path_slug(value: str) -> str:
+    slug = "".join(
+        character.lower() if character.isalnum() else "-"
+        for character in str(value)
+    ).strip("-")
+    while "--" in slug:
+        slug = slug.replace("--", "-")
+    return slug or "action"
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Execute an explicit X5 pick-and-place pipeline.",
@@ -582,16 +1192,42 @@ def build_arg_parser() -> argparse.ArgumentParser:
         required=True,
         help="Required confirmation that this command sends robot motion.",
     )
+
+    sequence_parser = subparsers.add_parser("sequence")
+    sequence_parser.add_argument(
+        "--plan",
+        required=True,
+        help="Path to action_sequence.json.",
+    )
+    sequence_parser.add_argument(
+        "--config",
+        default=DEFAULT_PIPELINE_CONFIG,
+        dest="config_path",
+    )
+    sequence_parser.add_argument(
+        "--execute",
+        action="store_true",
+        required=True,
+        help="Required confirmation that this command sends robot motion.",
+    )
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_arg_parser().parse_args(argv)
-    report = execute_pipeline(
-        object_name=args.object_name,
-        target_name=args.target_name,
-        config_path=args.config_path,
-    )
+    if args.command == "pipeline":
+        report = execute_pipeline(
+            object_name=args.object_name,
+            target_name=args.target_name,
+            config_path=args.config_path,
+        )
+    elif args.command == "sequence":
+        report = execute_action_sequence_plan(
+            plan_path=args.plan,
+            config_path=args.config_path,
+        )
+    else:
+        raise ValueError(f"unsupported command: {args.command}")
     print(json.dumps(report.to_dict(), indent=2, default=_json_default))
     return 0 if report.success else 1
 

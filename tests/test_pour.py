@@ -85,6 +85,7 @@ def _config():
         grasp_joints_deg=[65.0, 74.0, 0.0, 59.0, -105.0, 76.0, 141.0],
         pour_joints_deg=[75.0, 75.0, 0.0, 67.0, -111.0, 100.0, 149.0],
         home_torso_deg=[0.0],
+        pre_grasp_torso_deg=[8.0],
         pour_torso_deg=[15.0],
     )
 
@@ -106,7 +107,9 @@ def test_build_pour_steps_matches_fixed_right_arm_sequence():
         "home",
     ]
     assert len(steps) == 11
+    assert steps[1].torso_joints_deg == [8.0]
     assert steps[5].torso_joints_deg == [15.0]
+    assert steps[10].torso_joints_deg == [0.0]
     assert steps[8].gripper == "open"
 
 

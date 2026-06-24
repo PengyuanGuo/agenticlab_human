@@ -32,6 +32,7 @@ class PourConfig:
     grasp_joints_deg: list[float]
     pour_joints_deg: list[float]
     home_torso_deg: list[float]
+    pre_grasp_torso_deg: list[float]
     pour_torso_deg: list[float]
 
 
@@ -202,6 +203,12 @@ def load_pour_config(
             (1, 2),
             f"robot.{arm}.home_torso_deg",
         ),
+        pre_grasp_torso_deg=_required_vector(
+            arm_config,
+            "pre_grasp_torso_deg",
+            (1, 2),
+            f"robot.{arm}.pre_grasp_torso_deg",
+        ),
         pour_torso_deg=_required_vector(
             arm_config,
             "pour_torso_deg",
@@ -213,17 +220,18 @@ def load_pour_config(
 
 def build_pour_steps(config: PourConfig) -> list[PourStep]:
     home_torso = config.home_torso_deg
+    pre_grasp_torso = config.pre_grasp_torso_deg
     return [
         PourStep("home", config.home_joints_deg, home_torso),
-        PourStep("pre_grasp", config.pre_grasp_joints_deg, home_torso),
-        PourStep("grasp", config.grasp_joints_deg, home_torso),
+        PourStep("pre_grasp", config.pre_grasp_joints_deg, pre_grasp_torso),
+        PourStep("grasp", config.grasp_joints_deg, pre_grasp_torso),
         PourStep("close_gripper", gripper="close"),
-        PourStep("pre_grasp", config.pre_grasp_joints_deg, home_torso),
+        PourStep("pre_grasp", config.pre_grasp_joints_deg, pre_grasp_torso),
         PourStep("pour", config.pour_joints_deg, config.pour_torso_deg),
-        PourStep("pre_grasp_home_torso", config.pre_grasp_joints_deg, home_torso),
-        PourStep("grasp_release", config.grasp_joints_deg, home_torso),
+        PourStep("pre_grasp_home_torso", config.pre_grasp_joints_deg, pre_grasp_torso),
+        PourStep("grasp_release", config.grasp_joints_deg, pre_grasp_torso),
         PourStep("open_gripper", gripper="open"),
-        PourStep("pre_grasp", config.pre_grasp_joints_deg, home_torso),
+        PourStep("pre_grasp", config.pre_grasp_joints_deg, pre_grasp_torso),
         PourStep("home", config.home_joints_deg, home_torso),
     ]
 

@@ -232,7 +232,7 @@ def test_initialize_fails_when_gripper_cannot_open():
         backend.initialize()
 
 
-def test_pick_executes_home_approach_grasp_close_in_order():
+def test_pick_executes_home_approach_grasp_close_retreat_check_in_order():
     client = FakeX5HTTPClient()
     backend = _backend(client)
     backend.initialize()
@@ -240,20 +240,31 @@ def test_pick_executes_home_approach_grasp_close_in_order():
     result = backend.pick("number-block", grasp_candidates=[_known_grasp()])
 
     assert result.success is True
-    assert [step["step"] for step in result.metadata["completed_steps"]] == [
+    steps = [step["step"] for step in result.metadata["completed_steps"]]
+    assert steps[:5] == [
         "home",
         "approach",
         "grasp",
         "close_gripper",
+        "retreat",
     ]
+    assert steps[-1] == "check_gripper"
     motion_names = [call[0] for call in client.calls[2:]]
-    assert motion_names == [
+    assert motion_names[:6] == [
         "get_state",
         "move_joints",
         "movej_point",
         "movel_point",
         "close_gripper",
+        "movel_point",
     ]
+    check_calls = [
+        call
+        for call in client.calls
+        if call[0] == "move_joints"
+        and np.allclose(np.degrees(call[2]), CHECK_GRIPPER_JOINTS_DEG)
+    ]
+    assert check_calls
 
 
 def test_joint_target_is_split_into_server_safe_steps():
@@ -288,7 +299,7 @@ def test_pick_failure_stops_robot():
     assert [call[0] for call in client.calls][-2:] == ["close_gripper", "stop"]
 
 
-def test_place_executes_retreat_check_preplace_place_open_home():
+def test_place_executes_preplace_place_open_home():
     client = FakeX5HTTPClient()
     backend = _backend(client)
     backend.initialize()
@@ -305,9 +316,13 @@ def test_place_executes_retreat_check_preplace_place_open_home():
 
     assert pick_result.success is True
     assert result.success is True
+    assert [step["step"] for step in pick_result.metadata["completed_steps"]][-1] == (
+        "check_gripper"
+    )
     steps = [step["step"] for step in result.metadata["completed_steps"]]
-    assert steps[0] == "retreat"
-    assert steps.index("check_gripper") < steps.index("preplace")
+    assert steps[0] == "preplace"
+    assert "retreat" not in steps
+    assert "check_gripper" not in steps
     assert steps.index("preplace") < steps.index("place")
     assert steps.index("place") < steps.index("open_gripper")
     assert steps.index("open_gripper") < steps.index("home")

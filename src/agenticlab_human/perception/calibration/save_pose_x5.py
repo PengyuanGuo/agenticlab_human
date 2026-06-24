@@ -304,11 +304,11 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar=("J1", "J2", "J3", "J4", "J5", "J6", "J7"),
         help="override home_joints_deg from the X5 config",
     )
-    parser.add_argument("--speed-ratio", type=float, default=0.05)
+    parser.add_argument("--speed-ratio", type=float, default=0.5)
     parser.add_argument(
         "--max-step-deg",
         type=float,
-        default=4.0,
+        default=50.0,
         help="maximum joint delta per HTTP move command (must not exceed server limit)",
     )
     parser.add_argument("--timeout", type=float, default=90.0)

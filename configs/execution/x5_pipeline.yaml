@@ -8,7 +8,7 @@ pipeline:
   arm: left
   place_depth_patch_px: 9
   # Calibrate before real execution. Null is accepted only without --execute.
-  place_offset_world_x_m: -0.15
+  place_offset_world_x_m: -0.10
   request_timeout_s: 120.0
 
 detector:
@@ -24,6 +24,12 @@ grasp:
   score_threshold: 0.0
   collision_detection: true
   nms: true
+
+x5_pick:
+  verify_grip_status: true
+  gripper_arm: left
+  expected_grip_status: 2
+  max_retries: 2
 
 x5_place:
   default_place_orientation_rotvec: [1.2172784, 1.2123690, 1.2159012]

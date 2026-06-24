@@ -141,7 +141,7 @@ class RemoteX5ActionBackend:
         object_bbox: Optional[BBox] = None,
         object_pose: Any = None,
     ) -> ActionResult:
-        """home -> approach -> grasp -> close gripper."""
+        """home -> approach -> grasp -> close gripper -> retreat -> check gripper."""
 
         self._require_initialized()
         grasp = _select_grasp(grasp_candidates)
@@ -188,6 +188,19 @@ class RemoteX5ActionBackend:
                 )
             )
             completed_steps.append(self._close_gripper())
+            completed_steps.append(
+                self._movel(
+                    retreat_pose,
+                    self.config.retreat_speed_ratio,
+                    "retreat",
+                )
+            )
+            completed_steps.extend(
+                self._move_joint_target(
+                    self.config.check_gripper_joints_deg,
+                    "check_gripper",
+                )
+            )
         except Exception as exc:
             self._stop()
             metadata["completed_steps"] = completed_steps
@@ -199,7 +212,10 @@ class RemoteX5ActionBackend:
         return ActionResult(
             success=True,
             action_name="pick",
-            message=f"X5 picked {object_name} and closed the gripper.",
+            message=(
+                f"X5 picked {object_name}, closed the gripper, retreated, "
+                "and checked the gripper."
+            ),
             metadata=metadata,
         )
 
@@ -210,10 +226,10 @@ class RemoteX5ActionBackend:
         target_bbox: Optional[BBox] = None,
         target_pose: Any = None,
     ) -> ActionResult:
-        """retreat -> check gripper -> preplace -> place -> open -> home."""
+        """preplace -> place -> open -> home."""
 
         self._require_initialized()
-        if not self._holding_object or self._retreat_pose is None:
+        if not self._holding_object:
             return _failure("place", "X5 place requires a successful preceding pick.")
 
         plan = build_world_tcp_place_poses(
@@ -230,19 +246,6 @@ class RemoteX5ActionBackend:
         }
 
         try:
-            completed_steps.append(
-                self._movel(
-                    self._retreat_pose,
-                    self.config.retreat_speed_ratio,
-                    "retreat",
-                )
-            )
-            completed_steps.extend(
-                self._move_joint_target(
-                    self.config.check_gripper_joints_deg,
-                    "check_gripper",
-                )
-            )
             completed_steps.append(
                 self._movej(
                     plan["preplace_pose_xyz_rotvec"],

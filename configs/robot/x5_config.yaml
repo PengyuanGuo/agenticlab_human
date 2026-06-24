@@ -10,14 +10,14 @@ action_backend:
   camera_name: "Gemini335"
   approach_distance_m: 0.06
   home_speed_ratio: 0.5
-  home_max_step_deg: 100.0
+  home_max_step_deg: 150.0
   approach_speed_ratio: 0.5
   grasp_speed_ratio: 0.3
   retreat_speed_ratio: 0.3
   place_approach_speed_ratio: 0.5
   place_speed_ratio: 0.3
   # Signed world-X offset: pre-place.x = place.x + offset.
-  place_approach_offset_x_m: -0.05
+  place_approach_offset_x_m: -0.04
   # Fixed X5 TCP orientation for all place actions.
   default_place_orientation_rotvec: [1.2172784, 1.2123690, 1.2159012]
   request_timeout_s: 90.0
@@ -41,7 +41,7 @@ robot:
   enable_servo_on_start: true
   stop_on_shutdown: false
   max_command_speed_ratio: 0.5
-  max_joint_delta_deg: 100.0
+  max_joint_delta_deg: 150.0
   move_timeout_ms: 60000
   grippers:
     left:
@@ -93,10 +93,12 @@ robot:
     tool_frame:
       tf_no: 0
     home_joints_deg: [74, 32, 0, 99, -100, 77, 46] # gripper facing down
-    pre_grasp_joints_deg: [75, 70, 0, 70, -99, 84, 146] # right hand approch pose for bin
-    grasp_joints_deg: [65, 74, 0, 59, -105, 76, 141] # right hand grasp pose for bin
+    pre_grasp_joints_deg: [74, 68, 0, 74, -100, 84, 148] # right hand approch pose for bin
+    grasp_joints_deg: [65, 72, 0, 65, -106, 77, 144] # right hand grasp pose for bin
     pour_joints_deg: [75, 75, -7, 67, -111, 100, 149] # right hand pour pose for bin
     torso_joints_deg: [0]
     home_torso_deg: [0] # right hand don't have E3, may need to check avalability
-    pour_torso_deg: [15]
+    pre_grasp_torso_deg: [8.0]
+    pour_torso_deg: [23]
+    place_torso_deg: [-15.0]
     check_gripper_joints_deg: [-64, 37, -16, 95, 108, 86, -40] # mock check gripper to pass check
