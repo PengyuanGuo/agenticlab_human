@@ -244,36 +244,47 @@ def execute_pick(
         )
 
 
-def _open_gripper_before_pick_retry(
+def _init_gripper_before_pick_retry(
     runtime: ExecutionRuntime,
     arm: str,
     *,
     previous_grip_status: int | None,
-) -> list[dict[str, Any]]:
-    max_open_attempts = 2 if previous_grip_status == 3 else 1
-    completed_steps: list[dict[str, Any]] = []
-    last_error: str | None = None
-    for open_attempt in range(1, max_open_attempts + 1):
-        response = runtime.x5_client.open_gripper(arm=arm, wait=True)
-        success = bool(getattr(response, "success", False))
-        error = getattr(response, "error", None)
-        completed_steps.append(
-            {
-                "step": "open_gripper_before_pick_retry",
-                "arm": arm,
-                "attempt": open_attempt,
-                "previous_grip_status": previous_grip_status,
-                "success": success,
-                "error": error,
-                "request_id": getattr(response, "request_id", None),
-                "duration_ms": getattr(response, "duration_ms", None),
-            }
+) -> tuple[list[dict[str, Any]], str | None]:
+    try:
+        response = runtime.x5_client.init_gripper(arm=arm)
+    except Exception as exc:
+        error = str(exc)
+        return (
+            [
+                {
+                    "step": "init_gripper_before_pick_retry",
+                    "arm": arm,
+                    "previous_grip_status": previous_grip_status,
+                    "success": False,
+                    "error": error,
+                    "request_id": None,
+                    "duration_ms": None,
+                }
+            ],
+            error,
         )
-        if success:
-            return completed_steps
-        last_error = error or f"open {arm} gripper before pick retry failed"
 
-    raise RuntimeError(last_error or f"open {arm} gripper before pick retry failed")
+    success = bool(getattr(response, "success", False))
+    error = getattr(response, "error", None)
+    reset_steps = [
+        {
+            "step": "init_gripper_before_pick_retry",
+            "arm": arm,
+            "previous_grip_status": previous_grip_status,
+            "success": success,
+            "error": error,
+            "request_id": getattr(response, "request_id", None),
+            "duration_ms": getattr(response, "duration_ms", None),
+        }
+    ]
+    if success:
+        return reset_steps, None
+    return reset_steps, error or f"init {arm} gripper before pick retry failed"
 
 
 def _check_pick_grip_status(
@@ -373,22 +384,22 @@ def _execute_pick_with_grip_retry(
     previous_grip_status: int | None = None
 
     for attempt_index in range(max_retries + 1):
-        retry_open_steps: list[dict[str, Any]] = []
+        retry_reset_steps: list[dict[str, Any]] = []
         if attempt_index > 0 and verification is not None:
-            try:
-                retry_open_steps = _open_gripper_before_pick_retry(
-                    runtime,
-                    verification.arm,
-                    previous_grip_status=previous_grip_status,
-                )
-            except Exception as exc:
+            retry_reset_steps, reset_error = _init_gripper_before_pick_retry(
+                runtime,
+                verification.arm,
+                previous_grip_status=previous_grip_status,
+            )
+            if reset_error:
                 failure = _failed_action(
                     "pick",
                     object_name,
-                    str(exc),
+                    reset_error,
                     action_id=public_action_id,
                 )
                 failure.metadata["pick_attempts"] = attempts
+                failure.metadata["retry_reset_steps"] = retry_reset_steps
                 return failure
 
         result = execute_pick(
@@ -408,8 +419,8 @@ def _execute_pick_with_grip_retry(
                 "error": result.error,
             }
         )
-        if retry_open_steps:
-            attempts[-1]["retry_open_steps"] = retry_open_steps
+        if retry_reset_steps:
+            attempts[-1]["retry_reset_steps"] = retry_reset_steps
         if not result.success:
             result.metadata["action_id"] = public_action_id
             result.metadata.setdefault("pick_attempts", attempts)

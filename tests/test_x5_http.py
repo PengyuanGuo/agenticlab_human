@@ -192,6 +192,7 @@ def test_single_gripper_command_round_trip_updates_robot_level_state():
         client = X5HTTPClient("http://testserver", timeout_s=None, session=transport)
 
         close_result = client.close_gripper(request_id="test-close-gripper")
+        init_result = client.init_gripper(request_id="test-init-gripper")
         open_result = client.open_gripper(request_id="test-open-gripper")
 
     assert close_result.success is True
@@ -203,6 +204,13 @@ def test_single_gripper_command_round_trip_updates_robot_level_state():
     }
     assert close_result.state_after.gripper.position == 0.0
     assert close_result.state_after.gripper.raw_position == 0
+    assert init_result.success is True
+    assert init_result.accepted_command == {
+        "type": "init_gripper",
+        "arm": "left",
+    }
+    assert init_result.state_after.gripper.position == 1.0
+    assert init_result.state_after.gripper.raw_position == 1000
     assert open_result.success is True
     assert open_result.state_after.gripper.position == 1.0
     assert open_result.state_after.gripper.raw_position == 1000
@@ -227,6 +235,10 @@ def test_right_gripper_command_routes_to_right_gripper_state():
             arm="right",
             request_id="test-close-right-gripper",
         )
+        init_result = client.init_gripper(
+            arm="right",
+            request_id="test-init-right-gripper",
+        )
 
     assert close_result.success is True
     assert close_result.accepted_command == {
@@ -238,6 +250,13 @@ def test_right_gripper_command_routes_to_right_gripper_state():
     assert close_result.state_after.gripper.position == 1.0
     assert close_result.state_after.grippers["left"].position == 1.0
     assert close_result.state_after.grippers["right"].position == 0.0
+    assert init_result.success is True
+    assert init_result.accepted_command == {
+        "type": "init_gripper",
+        "arm": "right",
+    }
+    assert init_result.state_after.grippers["left"].position == 1.0
+    assert init_result.state_after.grippers["right"].position == 1.0
 
 
 def test_invalid_gripper_position_is_rejected_by_contract():

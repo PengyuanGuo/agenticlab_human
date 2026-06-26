@@ -189,12 +189,20 @@ class SetGripperCommand(BaseModel):
     wait: bool = True
 
 
+class InitGripperCommand(BaseModel):
+    """Reinitialize one gripper after a device fault or drop state."""
+
+    type: Literal["init_gripper"] = "init_gripper"
+    arm: ArmName = "left"
+
+
 RobotCommand = Annotated[
     Union[
         GetStateCommand,
         MoveJointsCommand,
         MoveJPointCommand,
         MoveLPointCommand,
+        InitGripperCommand,
         SetGripperCommand,
         StopCommand,
     ],

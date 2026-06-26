@@ -23,7 +23,7 @@ from agenticlab_human.perception.backend.perception_backend import DetectionResu
 
 
 class FakeX5Client:
-    def __init__(self, *, grip_statuses=None, open_gripper_results=None):
+    def __init__(self, *, grip_statuses=None, init_gripper_results=None):
         self.capture_count = 0
         self.closed = False
         self.calls = []
@@ -33,8 +33,8 @@ class FakeX5Client:
         self.response_count = 0
         self.grip_statuses = list(grip_statuses or [2])
         self.grip_status_reads = 0
-        self.open_gripper_results = list(open_gripper_results or [])
-        self.open_gripper_reads = 0
+        self.init_gripper_results = list(init_gripper_results or [])
+        self.init_gripper_reads = 0
 
     def health(self):
         ready = SimpleNamespace(ready=True, detail="ready")
@@ -110,16 +110,26 @@ class FakeX5Client:
     def open_gripper(self, *, arm, wait):
         self.response_count += 1
         self.calls.append(("open_gripper", arm, wait))
+        return SimpleNamespace(
+            success=True,
+            error=None,
+            request_id=f"pipeline-{self.response_count}",
+            duration_ms=1.0,
+        )
+
+    def init_gripper(self, *, arm):
+        self.response_count += 1
+        self.calls.append(("init_gripper", arm))
         configured_result = True
-        if self.open_gripper_reads < len(self.open_gripper_results):
-            configured_result = self.open_gripper_results[self.open_gripper_reads]
-        self.open_gripper_reads += 1
+        if self.init_gripper_reads < len(self.init_gripper_results):
+            configured_result = self.init_gripper_results[self.init_gripper_reads]
+        self.init_gripper_reads += 1
         if isinstance(configured_result, str):
             success = False
             error = configured_result
         else:
             success = bool(configured_result)
-            error = None if success else "open gripper failed"
+            error = None if success else "init gripper failed"
         return SimpleNamespace(
             success=success,
             error=error,
@@ -202,12 +212,12 @@ def _runtime(
     *,
     grip_statuses=None,
     pick_max_retries=1,
-    open_gripper_results=None,
+    init_gripper_results=None,
 ):
     return ExecutionRuntime(
         x5_client=FakeX5Client(
             grip_statuses=grip_statuses,
-            open_gripper_results=open_gripper_results,
+            init_gripper_results=init_gripper_results,
         ),
         detector=FakeDetector(),
         grasp_backend=FakeGraspBackend(),
@@ -302,6 +312,7 @@ def test_execute_pick_stays_single_attempt_when_gripper_is_empty(tmp_path):
     ]
     assert len(pick_calls) == 1
     assert ("open_gripper", "left", True) not in runtime.x5_client.calls
+    assert ("init_gripper", "left") not in runtime.x5_client.calls
     assert "pick_attempts" not in result.metadata
     assert "gripper_verification" not in result.metadata
     assert (
@@ -335,12 +346,13 @@ def test_action_sequence_retries_pick_when_gripper_is_empty(tmp_path):
         call for call in runtime.action_backend.calls if call[0] == "pick"
     ]
     assert len(pick_calls) == 2
-    assert ("open_gripper", "left", True) in runtime.x5_client.calls
+    assert ("init_gripper", "left") in runtime.x5_client.calls
+    assert ("open_gripper", "left", True) not in runtime.x5_client.calls
     attempts = result.metadata["pick_attempts"]
     assert [attempt["grip_status"] for attempt in attempts] == [1, 2]
     assert attempts[0]["verified"] is False
-    assert len(attempts[1]["retry_open_steps"]) == 1
-    assert attempts[1]["retry_open_steps"][0]["previous_grip_status"] == 1
+    assert len(attempts[1]["retry_reset_steps"]) == 1
+    assert attempts[1]["retry_reset_steps"][0]["previous_grip_status"] == 1
     assert attempts[1]["verified"] is True
     assert result.metadata["action_id"] == 1
     assert (
@@ -351,12 +363,11 @@ def test_action_sequence_retries_pick_when_gripper_is_empty(tmp_path):
     ).exists()
 
 
-def test_action_sequence_drop_state_opens_twice_before_pick_retry(tmp_path):
+def test_action_sequence_drop_state_initializes_gripper_before_pick_retry(tmp_path):
     runtime = _runtime(
         tmp_path,
         grip_statuses=[3, 2],
         pick_max_retries=1,
-        open_gripper_results=[False, True],
     )
     sequence = ActionSequence(
         task="drop-retry-pick",
@@ -376,20 +387,54 @@ def test_action_sequence_drop_state_opens_twice_before_pick_retry(tmp_path):
     result = report.results[0]
     assert report.success is True
     assert result.success is True
-    open_calls = [
-        call for call in runtime.x5_client.calls if call[0] == "open_gripper"
+    init_calls = [
+        call for call in runtime.x5_client.calls if call[0] == "init_gripper"
     ]
-    assert open_calls == [
-        ("open_gripper", "left", True),
-        ("open_gripper", "left", True),
-    ]
+    assert init_calls == [("init_gripper", "left")]
     attempts = result.metadata["pick_attempts"]
     assert [attempt["grip_status"] for attempt in attempts] == [3, 2]
-    retry_open_steps = attempts[1]["retry_open_steps"]
-    assert [step["success"] for step in retry_open_steps] == [False, True]
-    assert [step["attempt"] for step in retry_open_steps] == [1, 2]
-    assert retry_open_steps[0]["previous_grip_status"] == 3
-    assert retry_open_steps[1]["previous_grip_status"] == 3
+    retry_reset_steps = attempts[1]["retry_reset_steps"]
+    assert [step["success"] for step in retry_reset_steps] == [True]
+    assert retry_reset_steps[0]["step"] == "init_gripper_before_pick_retry"
+    assert retry_reset_steps[0]["previous_grip_status"] == 3
+
+
+def test_action_sequence_stops_when_gripper_init_before_pick_retry_fails(tmp_path):
+    runtime = _runtime(
+        tmp_path,
+        grip_statuses=[3, 2],
+        pick_max_retries=1,
+        init_gripper_results=["init gripper failed"],
+    )
+    sequence = ActionSequence(
+        task="drop-reset-fail",
+        task_description="reset gripper fails before retry",
+        actions=[
+            Action(
+                id=1,
+                name="pick",
+                args={"object": "number_block_1"},
+            )
+        ],
+    )
+
+    with runtime:
+        report = execute_action_sequence(runtime, sequence)
+
+    result = report.results[0]
+    assert report.success is False
+    assert result.success is False
+    assert result.error == "init gripper failed"
+    assert runtime.x5_client.capture_count == 1
+    pick_calls = [
+        call for call in runtime.action_backend.calls if call[0] == "pick"
+    ]
+    assert len(pick_calls) == 1
+    assert result.metadata["pick_attempts"][0]["retryable"] is True
+    retry_reset_steps = result.metadata["retry_reset_steps"]
+    assert len(retry_reset_steps) == 1
+    assert retry_reset_steps[0]["success"] is False
+    assert retry_reset_steps[0]["previous_grip_status"] == 3
 
 
 def test_action_sequence_fails_when_gripper_retry_still_empty(tmp_path):

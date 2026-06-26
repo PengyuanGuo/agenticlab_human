@@ -8,7 +8,7 @@ action_backend:
   server_url: "http://192.168.1.15:8000"
   arm: "left"
   camera_name: "Gemini335"
-  approach_distance_m: 0.06
+  approach_distance_m: 0.04
   home_speed_ratio: 0.5
   home_max_step_deg: 150.0
   approach_speed_ratio: 0.5

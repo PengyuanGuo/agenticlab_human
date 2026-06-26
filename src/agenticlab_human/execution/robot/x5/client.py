@@ -14,6 +14,7 @@ from PIL import Image
 from agenticlab_human.execution.robot.x5.contracts import (
     GetStateCommand,
     HealthResponse,
+    InitGripperCommand,
     MoveJPointCommand,
     MoveJointsCommand,
     MoveLPointCommand,
@@ -172,6 +173,17 @@ class X5HTTPClient:
 
         return self.send_command(
             SetGripperCommand(arm=arm, position=position, wait=wait),
+            request_id=request_id,
+        )
+
+    def init_gripper(
+        self,
+        *,
+        arm: str = "left",
+        request_id: str | None = None,
+    ) -> RobotCommandResponse:
+        return self.send_command(
+            InitGripperCommand(arm=arm),
             request_id=request_id,
         )
 

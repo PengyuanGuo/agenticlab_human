@@ -24,6 +24,7 @@ from agenticlab_human.execution.robot.x5.camera import (
 from agenticlab_human.execution.robot.x5.contracts import (
     ComponentHealth,
     HealthResponse,
+    InitGripperCommand,
     RGBD_MEDIA_TYPE,
     RobotCommandRequest,
     RobotCommandResponse,
@@ -136,6 +137,8 @@ class HardwareRuntime:
         )
 
     async def execute(self, command):
+        if isinstance(command, InitGripperCommand):
+            return await self._gripper_call(self.gripper.reset, command)
         if isinstance(command, SetGripperCommand):
             return await self._gripper_call(self.gripper.execute, command)
         return await self._robot_call(self.controller.execute, command)

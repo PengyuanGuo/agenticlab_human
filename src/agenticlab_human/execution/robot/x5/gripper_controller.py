@@ -15,6 +15,7 @@ import yaml
 from agenticlab_human.execution.robot.x5.contracts import (
     ComponentHealth,
     GripperState,
+    InitGripperCommand,
     SetGripperCommand,
 )
 
@@ -130,6 +131,8 @@ class X5Gripper(Protocol):
 
     def execute(self, command: SetGripperCommand) -> None: ...
 
+    def reset(self, command: InitGripperCommand) -> None: ...
+
     def get_state(self) -> GripperState | dict[str, GripperState]: ...
 
     def health(self) -> ComponentHealth: ...
@@ -207,6 +210,20 @@ class GripperService:
                         f"{self._move_timeout_s:.1f}s"
                     )
                 time.sleep(self._poll_interval_s)
+
+    def reset(self, command: InitGripperCommand) -> None:
+        with self._lock:
+            device = self._require_device()
+            try:
+                device.init_gripper(
+                    timeout_s=self._init_timeout_s,
+                    poll_interval_s=self._poll_interval_s,
+                )
+                device.set_force(self._force)
+                self._last_error = ""
+            except Exception as exc:
+                self._last_error = str(exc)
+                raise
 
     def get_state(self) -> GripperState:
         with self._lock:
@@ -316,6 +333,15 @@ class MockGripperService:
             self._state.raw_position = int(round(command.position * 1000.0))
             self._state.grip_status = 1
 
+    def reset(self, command: InitGripperCommand) -> None:
+        with self._lock:
+            if not self._initialized:
+                raise RuntimeError("mock gripper is not initialized")
+            self._state.position = 1.0
+            self._state.raw_position = 1000
+            self._state.grip_status = 1
+            self._state.moving = False
+
     def get_state(self) -> GripperState:
         with self._lock:
             return self._state.model_copy(deep=True)
@@ -371,6 +397,9 @@ class MultiGripperService:
 
     def execute(self, command: SetGripperCommand) -> None:
         self._service_for(command.arm).execute(command)
+
+    def reset(self, command: InitGripperCommand) -> None:
+        self._service_for(command.arm).reset(command)
 
     def get_state(self) -> dict[str, GripperState]:
         states: dict[str, GripperState] = {}

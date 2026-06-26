@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from agenticlab_human.execution.robot.x5.contracts import (
+    InitGripperCommand,
     MoveJPointCommand,
     MoveJointsCommand,
     MoveLPointCommand,
@@ -294,6 +295,30 @@ def test_gripper_service_initializes_maps_positions_and_reads_state():
     assert open_state.position == 1.0
     assert open_state.raw_position == 1000
     assert service.health().ready is True
+
+
+def test_gripper_service_reset_forces_device_init_after_startup():
+    gripper = FakeGripper()
+    service = GripperService(
+        {
+            "force": 80,
+            "closed_position": 0,
+            "open_position": 1000,
+            "init_timeout_s": 3.0,
+            "move_timeout_s": 2.0,
+            "poll_interval_s": 0.01,
+        },
+        device=gripper,
+    )
+    service.initialize()
+    gripper.calls.clear()
+    gripper.grip_status = 3
+
+    service.reset(InitGripperCommand(arm="left"))
+
+    assert ("init_gripper", 3.0, 0.01) in gripper.calls
+    assert ("set_force", 80) in gripper.calls
+    assert gripper.init_status == 1
 
 
 def test_real_x5_controller_stop_uses_xapi_stop_abort_sequence():
