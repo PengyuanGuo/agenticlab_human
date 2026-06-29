@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Optional, Protocol
@@ -29,7 +28,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 DEFAULT_CONFIG_PATH = "configs/planning/task_parser_config.yaml"
-DEFAULT_SPEECH_MODULE_PATH = "/home/agenticlab/Project/speech_to_text_module"
 
 
 class SceneProvider(Protocol):
@@ -190,21 +188,8 @@ def load_task_parser(config_path: str, project_root: Optional[str] = None) -> Ta
     return TaskParser(cfg)
 
 
-def load_speech_service(speech_module_path: str, device: str = "cpu"):
-    module_path = Path(speech_module_path).expanduser().resolve()
-    if not module_path.exists():
-        raise FileNotFoundError(f"speech_to_text_module path not found: {module_path}")
-
-    # Support both package import and direct module import.
-    for path in (module_path.parent, module_path):
-        path_str = str(path)
-        if path_str not in sys.path:
-            sys.path.insert(0, path_str)
-
-    try:
-        from speech_to_text_module import SpeechInputService
-    except ImportError:
-        from speech_input_service import SpeechInputService
+def load_speech_service(device: str = "cpu"):
+    from agenticlab_human.voice import SpeechInputService
 
     return SpeechInputService(device=device)
 
@@ -247,7 +232,6 @@ def main() -> None:
         choices=["Orbbec", "FemtoBolt", "Gemini305"],
         help="Camera backend name used when --scene-source=camera.",
     )
-    parser.add_argument("--speech-module-path", default=DEFAULT_SPEECH_MODULE_PATH)
     parser.add_argument("--speech-device", default="cpu", choices=["cpu", "cuda"])
     parser.add_argument(
         "--task-text",
@@ -276,10 +260,7 @@ def main() -> None:
             adapter = VoiceToPlanner(task_parser, scene_provider)
             result = adapter.plan_text(args.task_text)
         else:
-            speech_service = load_speech_service(
-                args.speech_module_path,
-                device=args.speech_device,
-            )
+            speech_service = load_speech_service(device=args.speech_device)
             adapter = VoiceToPlanner(task_parser, scene_provider, speech_service)
             result = adapter.listen_and_plan()
 

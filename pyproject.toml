@@ -16,6 +16,17 @@ dev = [
     "httpx",
     "pytest",
 ]
+voice = [
+    "numpy>=1.21.5",
+    "sounddevice",
+    "soundfile",
+    "PyAudio",
+    "pynput>=1.8.2",
+    "torch",
+    "torchaudio",
+    "funasr",
+    "modelscope",
+]
 x5 = [
     "fastapi",
     "opencv-python",

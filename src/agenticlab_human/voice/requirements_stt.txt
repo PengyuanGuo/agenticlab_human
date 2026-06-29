@@ -1,0 +1,22 @@
+# Speech to Text Module - Python requirements
+#
+# Ubuntu system packages used by the audio stack, install separately:
+# sudo apt update
+# sudo apt install -y portaudio19-dev libasound2-dev libsndfile1 alsa-utils ffmpeg build-essential
+
+numpy>=1.21.5
+sounddevice
+soundfile
+PyAudio
+pynput>=1.8.2
+torch
+torchaudio
+funasr
+modelscope
+
+# x86 Linux CPU-only PyTorch wheel, if needed:
+# python -m pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+#
+# Jetson note:
+# Do not install generic torch/torchaudio wheels on JetPack. Use NVIDIA's
+# matching prebuilt wheels instead.

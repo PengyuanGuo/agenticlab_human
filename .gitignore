@@ -19,3 +19,5 @@ train_yolo/runs
 datasets/
 
 data/checkpoints/
+
+data/TDM020-890_URDF.zip

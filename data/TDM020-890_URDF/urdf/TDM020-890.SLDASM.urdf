@@ -1,0 +1,1033 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- This URDF was automatically created by SolidWorks to URDF Exporter! Originally created by Stephen Brawner (brawner@gmail.com) 
+     Commit Version: 1.6.0-4-g7f85cfe  Build Version: 1.6.7995.38578
+     For more information, please see http://wiki.ros.org/sw_urdf_exporter -->
+<robot
+  name="TDM020-890.SLDASM">
+  <link
+    name="base_link">
+    <inertial>
+      <origin
+        xyz="-0.0001495 -3.6027E-06 0.21937"
+        rpy="0 0 0" />
+      <mass
+        value="15.785" />
+      <inertia
+        ixx="0.33756"
+        ixy="-9.7516E-06"
+        ixz="-0.00031689"
+        iyy="0.33783"
+        iyz="-8.008E-07"
+        izz="0.090189" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://TDM020-890.SLDASM/meshes/base_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.75294 0.75294 0.75294 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://TDM020-890.SLDASM/meshes/base_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <link
+    name="body_Link">
+    <inertial>
+      <origin
+        xyz="0.00094571 0.00017849 0.17947"
+        rpy="0 0 0" />
+      <mass
+        value="14.446" />
+      <inertia
+        ixx="0.1966"
+        ixy="-2.4774E-07"
+        ixz="0.0011953"
+        iyy="0.17822"
+        iyz="0.00017251"
+        izz="0.12295" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://TDM020-890.SLDASM/meshes/body_Link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.79216 0.81961 0.93333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://TDM020-890.SLDASM/meshes/body_Link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="body_Joint"
+    type="revolute">
+    <origin
+      xyz="0 0 0.466"
+      rpy="0 0 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="body_Link" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-2.9671"
+      upper="2.9671"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="neck_Link">
+    <inertial>
+      <origin
+        xyz="-0.00033371 -0.0010891 0.027893"
+        rpy="0 0 0" />
+      <mass
+        value="1.1245" />
+      <inertia
+        ixx="0.0038932"
+        ixy="-1.7095E-06"
+        ixz="2.1875E-05"
+        iyy="0.0034122"
+        iyz="6.0516E-05"
+        izz="0.0014205" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://TDM020-890.SLDASM/meshes/neck_Link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.79216 0.81961 0.93333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://TDM020-890.SLDASM/meshes/neck_Link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="neck_Joint"
+    type="revolute">
+    <origin
+      xyz="0 0 0.404"
+      rpy="0 0 0" />
+    <parent
+      link="body_Link" />
+    <child
+      link="neck_Link" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-1.5708"
+      upper="1.5708"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="head_Link">
+    <inertial>
+      <origin
+        xyz="0.079009 0.0010522 0.010199"
+        rpy="0 0 0" />
+      <mass
+        value="0.65666" />
+      <inertia
+        ixx="0.0051807"
+        ixy="4.6113E-05"
+        ixz="0.0001544"
+        iyy="0.002422"
+        iyz="7.378E-06"
+        izz="0.0065769" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://TDM020-890.SLDASM/meshes/head_Link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.75294 0.75294 0.75294 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://TDM020-890.SLDASM/meshes/head_Link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="head_Joint"
+    type="revolute">
+    <origin
+      xyz="0 0 0.0755"
+      rpy="0 0 0" />
+    <parent
+      link="neck_Link" />
+    <child
+      link="head_Link" />
+    <axis
+      xyz="0 1 0" />
+    <limit
+      lower="-0.78539"
+      upper="0.48869"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="left arm base_Link">
+    <inertial>
+      <origin
+        xyz="0.0010944 0.10318 0.00096001"
+        rpy="0 0 0" />
+      <mass
+        value="1.6113" />
+      <inertia
+        ixx="0.0061621"
+        ixy="-8.3896E-05"
+        ixz="1.617E-06"
+        iyy="0.0024512"
+        iyz="-2.8093E-05"
+        izz="0.0061822" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://TDM020-890.SLDASM/meshes/left arm base_Link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.75294 0.75294 0.75294 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://TDM020-890.SLDASM/meshes/left arm base_Link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="left arm base_Joint"
+    type="revolute">
+    <origin
+      xyz="0 0.1127 0.262"
+      rpy="0 0 0" />
+    <parent
+      link="body_Link" />
+    <child
+      link="left arm base_Link" />
+    <axis
+      xyz="0 1 0" />
+    <limit
+      lower="-2.9671"
+      upper="2.9671"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="left shoulder_Link">
+    <inertial>
+      <origin
+        xyz="-0.000538982573944719 0.0173300425857268 -0.00107715239347117"
+        rpy="0 0 0" />
+      <mass
+        value="0.608892487155027" />
+      <inertia
+        ixx="0.00143992130190144"
+        ixy="-7.82951546310692E-06"
+        ixz="-2.16912679083468E-06"
+        iyy="0.00261755275283589"
+        iyz="-6.10436839419332E-05"
+        izz="0.00300247370189256" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://TDM020-890.SLDASM/meshes/left shoulder_Link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://TDM020-890.SLDASM/meshes/left shoulder_Link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="left shoulder_Joint"
+    type="revolute">
+    <origin
+      xyz="0 0.1523 0"
+      rpy="0 0 0" />
+    <parent
+      link="left arm base_Link" />
+    <child
+      link="left shoulder_Link" />
+    <axis
+      xyz="1 0 0" />
+    <limit
+      lower="-1.5708"
+      upper="0.52359"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="left arm 1_Link">
+    <inertial>
+      <origin
+        xyz="0.000597144263033743 0.0949423265822045 0.000705988249386169"
+        rpy="0 0 0" />
+      <mass
+        value="1.48192609711033" />
+      <inertia
+        ixx="0.00379093634508639"
+        ixy="9.65238119276592E-07"
+        ixz="-3.59680287640811E-06"
+        iyy="0.00223978782873642"
+        iyz="-3.25468438033175E-05"
+        izz="0.00364611038977401" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://TDM020-890.SLDASM/meshes/left arm 1_Link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.772549019607843 0.752941176470588 0.733333333333333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://TDM020-890.SLDASM/meshes/left arm 1_Link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="left arm 1_Joint"
+    type="revolute">
+    <origin
+      xyz="0 0.1045 0"
+      rpy="0 0 0" />
+    <parent
+      link="left shoulder_Link" />
+    <child
+      link="left arm 1_Link" />
+    <axis
+      xyz="0 1 0" />
+    <limit
+      lower="-2.7053"
+      upper="2.7053"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="left arm 2_Link">
+    <inertial>
+      <origin
+        xyz="0.000114336410574647 0.114506794118008 0.000903757611068645"
+        rpy="0 0 0" />
+      <mass
+        value="1.60587175550599" />
+      <inertia
+        ixx="0.0202783083213348"
+        ixy="1.89421731684835E-05"
+        ixz="-7.9286303052035E-09"
+        iyy="0.0017763892225382"
+        iyz="0.000104210861964569"
+        izz="0.0203774102170405" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://TDM020-890.SLDASM/meshes/left arm 2_Link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://TDM020-890.SLDASM/meshes/left arm 2_Link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="left arm 2_Joint"
+    type="revolute">
+    <origin
+      xyz="0 0.3455 0"
+      rpy="0 0 0" />
+    <parent
+      link="left arm 1_Link" />
+    <child
+      link="left arm 2_Link" />
+    <axis
+      xyz="1 0 0" />
+    <limit
+      lower="-2.0944"
+      upper="0.52359"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="left wrist 1_Link">
+    <inertial>
+      <origin
+        xyz="-0.000126439258697366 0.0540428643424122 0.00133769576061538"
+        rpy="0 0 0" />
+      <mass
+        value="0.292165661424284" />
+      <inertia
+        ixx="0.000469324584383462"
+        ixy="6.89772110222396E-06"
+        ixz="5.9246823221093E-07"
+        iyy="0.000633054742992921"
+        iyz="-7.87027707461064E-06"
+        izz="0.00082086344901152" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://TDM020-890.SLDASM/meshes/left wrist 1_Link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://TDM020-890.SLDASM/meshes/left wrist 1_Link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="left wrist 1_Joint"
+    type="revolute">
+    <origin
+      xyz="0 0.3565 0"
+      rpy="0 0 0" />
+    <parent
+      link="left arm 2_Link" />
+    <child
+      link="left wrist 1_Link" />
+    <axis
+      xyz="0 1 0" />
+    <limit
+      lower="-2.9322"
+      upper="2.9322"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="left wrist 2_Link">
+    <inertial>
+      <origin
+        xyz="0.000474516908238931 0.0384898179200883 -0.000147883576470775"
+        rpy="0 0 0" />
+      <mass
+        value="0.89246599313403" />
+      <inertia
+        ixx="0.00213690080463157"
+        ixy="1.82237073011047E-05"
+        ixz="-1.81630130576625E-08"
+        iyy="0.000929510723686978"
+        iyz="-3.76497194559588E-06"
+        izz="0.00223095731902122" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://TDM020-890.SLDASM/meshes/left wrist 2_Link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://TDM020-890.SLDASM/meshes/left wrist 2_Link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="left wrist 2_Joint"
+    type="revolute">
+    <origin
+      xyz="0 0.0935 0"
+      rpy="0 0 0" />
+    <parent
+      link="left wrist 1_Link" />
+    <child
+      link="left wrist 2_Link" />
+    <axis
+      xyz="1 0 0" />
+    <limit
+      lower="-1.7453"
+      upper="0.52359"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="left end_Link">
+    <inertial>
+      <origin
+        xyz="0.000965834520563217 -0.0133015585802281 -0.00010877404844567"
+        rpy="0 0 0" />
+      <mass
+        value="0.0819378994474746" />
+      <inertia
+        ixx="4.30414187493962E-05"
+        ixy="1.94230088965366E-07"
+        ixz="-8.56249890754313E-09"
+        iyy="7.87142213896821E-05"
+        iyz="4.0365869056371E-08"
+        izz="4.30915923685773E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://TDM020-890.SLDASM/meshes/left end_Link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://TDM020-890.SLDASM/meshes/left end_Link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="left end_Joint"
+    type="revolute">
+    <origin
+      xyz="0 0.1468 0"
+      rpy="0 0 0" />
+    <parent
+      link="left wrist 2_Link" />
+    <child
+      link="left end_Link" />
+    <axis
+      xyz="0 1 0" />
+    <limit
+      lower="-2.9671"
+      upper="2.9671"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="right arm base_Link">
+    <inertial>
+      <origin
+        xyz="-0.00109442049872643 -0.103384245859721 0.000960013007773375"
+        rpy="0 0 0" />
+      <mass
+        value="1.61129930115573" />
+      <inertia
+        ixx="0.00616213603438663"
+        ixy="-8.38964954122542E-05"
+        ixz="-1.61699048989172E-06"
+        iyy="0.0024511652495309"
+        iyz="2.80929000355463E-05"
+        izz="0.00618224997287986" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://TDM020-890.SLDASM/meshes/right arm base_Link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://TDM020-890.SLDASM/meshes/right arm base_Link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="right arm base_Joint"
+    type="revolute">
+    <origin
+      xyz="0 -0.1125 0.262"
+      rpy="0 0 0" />
+    <parent
+      link="body_Link" />
+    <child
+      link="right arm base_Link" />
+    <axis
+      xyz="0 1 0" />
+    <limit
+      lower="-2.9671"
+      upper="2.9671"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="right shoulder_Link">
+    <inertial>
+      <origin
+        xyz="0.000538982573952542 -0.017330042585724 -0.00107715239346984"
+        rpy="0 0 0" />
+      <mass
+        value="0.608892487155033" />
+      <inertia
+        ixx="0.00143992130190146"
+        ixy="-7.82951546311883E-06"
+        ixz="2.16912679083652E-06"
+        iyy="0.00261755275283591"
+        iyz="6.10436839419283E-05"
+        izz="0.00300247370189259" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://TDM020-890.SLDASM/meshes/right shoulder_Link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://TDM020-890.SLDASM/meshes/right shoulder_Link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="right shoulder_Joint"
+    type="revolute">
+    <origin
+      xyz="0 -0.1525 0"
+      rpy="0 0 0" />
+    <parent
+      link="right arm base_Link" />
+    <child
+      link="right shoulder_Link" />
+    <axis
+      xyz="1 0 0" />
+    <limit
+      lower="-0.52359"
+      upper="1.5708"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="right arm 1_Link">
+    <inertial>
+      <origin
+        xyz="-0.000597144936156915 -0.0949423361889213 0.00070598870137617"
+        rpy="0 0 0" />
+      <mass
+        value="1.48192615809275" />
+      <inertia
+        ixx="0.00379093664225144"
+        ixy="9.65238805700784E-07"
+        ixz="3.59682112419083E-06"
+        iyy="0.00223978789898773"
+        iyz="3.25468087466055E-05"
+        izz="0.00364611063794924" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://TDM020-890.SLDASM/meshes/right arm 1_Link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.772549019607843 0.752941176470588 0.733333333333333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://TDM020-890.SLDASM/meshes/right arm 1_Link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="right arm 1_Joint"
+    type="revolute">
+    <origin
+      xyz="0 -0.1045 0"
+      rpy="0 0 0" />
+    <parent
+      link="right shoulder_Link" />
+    <child
+      link="right arm 1_Link" />
+    <axis
+      xyz="0 1 0" />
+    <limit
+      lower="-2.7053"
+      upper="2.7053"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="right arm 2_Link">
+    <inertial>
+      <origin
+        xyz="-0.000114336396297215 -0.114506794151252 0.000903757616892098"
+        rpy="0 0 0" />
+      <mass
+        value="1.60587175458856" />
+      <inertia
+        ixx="0.0202783083174942"
+        ixy="1.89421716823876E-05"
+        ixz="7.9288795780646E-09"
+        iyy="0.00177638922182561"
+        iyz="-0.000104210862567194"
+        izz="0.0203774102126887" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://TDM020-890.SLDASM/meshes/right arm 2_Link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://TDM020-890.SLDASM/meshes/right arm 2_Link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="right arm 2_Joint"
+    type="revolute">
+    <origin
+      xyz="0 -0.3455 0"
+      rpy="0 0 0" />
+    <parent
+      link="right arm 1_Link" />
+    <child
+      link="right arm 2_Link" />
+    <axis
+      xyz="1 0 0" />
+    <limit
+      lower="-0.52359"
+      upper="2.0944"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="right wrist 1_Link">
+    <inertial>
+      <origin
+        xyz="0.000126493526399926 -0.0540428219525493 0.00133765665977292"
+        rpy="0 0 0" />
+      <mass
+        value="0.292165194026126" />
+      <inertia
+        ixx="0.00046932380052778"
+        ixy="6.89814704882718E-06"
+        ixz="-5.92971778662775E-07"
+        iyy="0.000633053915430105"
+        iyz="7.87004757176997E-06"
+        izz="0.000820862064136897" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://TDM020-890.SLDASM/meshes/right wrist 1_Link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://TDM020-890.SLDASM/meshes/right wrist 1_Link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="right wrist 1_Joint"
+    type="revolute">
+    <origin
+      xyz="0 -0.3565 0"
+      rpy="0 0 0" />
+    <parent
+      link="right arm 2_Link" />
+    <child
+      link="right wrist 1_Link" />
+    <axis
+      xyz="0 1 0" />
+    <limit
+      lower="-2.9322"
+      upper="2.9322"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="right wrist 2_Link">
+    <inertial>
+      <origin
+        xyz="-0.000474516908101898 -0.0384898179201247 -0.000147883576102847"
+        rpy="0 0 0" />
+      <mass
+        value="0.892465993167534" />
+      <inertia
+        ixx="0.00213690080462963"
+        ixy="1.82237072931998E-05"
+        ixz="1.81630091399321E-08"
+        iyy="0.000929510723731179"
+        iyz="3.76497194747255E-06"
+        izz="0.00223095731906988" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://TDM020-890.SLDASM/meshes/right wrist 2_Link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://TDM020-890.SLDASM/meshes/right wrist 2_Link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="right wrist 2_Joint"
+    type="revolute">
+    <origin
+      xyz="0 -0.0935 0"
+      rpy="0 0 0" />
+    <parent
+      link="right wrist 1_Link" />
+    <child
+      link="right wrist 2_Link" />
+    <axis
+      xyz="1 0 0" />
+    <limit
+      lower="-0.52359"
+      upper="1.7453"
+      effort="0"
+      velocity="0" />
+  </joint>
+  <link
+    name="right end_Link">
+    <inertial>
+      <origin
+        xyz="0.000965834520602477 0.0133015585802365 0.000108774048447335"
+        rpy="0 0 0" />
+      <mass
+        value="0.0819378994474764" />
+      <inertia
+        ixx="4.3041418749396E-05"
+        ixy="-1.94230088965914E-07"
+        ixz="8.5624989071922E-09"
+        iyy="7.8714221389684E-05"
+        iyz="4.03658690562699E-08"
+        izz="4.30915923685793E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://TDM020-890.SLDASM/meshes/right end_Link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.752941176470588 0.752941176470588 0.752941176470588 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://TDM020-890.SLDASM/meshes/right end_Link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="right end_Joint"
+    type="revolute">
+    <origin
+      xyz="0 -0.1468 0"
+      rpy="0 0 0" />
+    <parent
+      link="right wrist 2_Link" />
+    <child
+      link="right end_Link" />
+    <axis
+      xyz="0 1 0" />
+    <limit
+      lower="-2.9671"
+      upper="2.9671"
+      effort="0"
+      velocity="0" />
+  </joint>
+</robot>

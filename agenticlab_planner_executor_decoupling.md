@@ -271,7 +271,7 @@ PYTHONPATH=src /usr/bin/python3 -m agenticlab_human.execution.action \
 | ActionSequence 契约 | ✅ 已建立 | `src/agenticlab_human/core/action_sequence.py` 已提供 `Action` / `ActionSequence` dataclass、`load()`、`load_from_dir()`、`from_task_plan_json()`、JSON 序列化。 | 将其视为 Planner → Executor 的唯一运行时契约，后续 executor 不直接读 `TaskPlan`。 |
 | `TaskPlan` → `ActionSequence` | ✅ 已接上 | `TaskPlan.to_action_sequence()` / `to_action_sequence_dict()` 已存在，`TaskParser.save_results(..., save_action_sequence=True)` 可写 `action_sequence.json`。 | 历史 session 可能没有 `action_sequence.json`，但可以由 `ActionSequence.load(session_dir)` 从 `task_plan.json` 现算。 |
 | 历史 plan 抽取验证 | ✅ 已验证 | 对 `output/task_parser/20260527_112644/task_plan.json` 抽取得到 `ActionSequence(... actions=12, goal_conditions=4)`；首个动作解析为 `pick object=green-cube-1 from=orange-cube-1`，最后动作为 `place object=blue-cube-1 target=green-cube-1`。 | 给这个样例补一个轻量单元测试，锁住 PDDL 参数名映射行为。 |
-| Voice STT | ✅ 独立模块可用 | `/home/agenticlab/Project/speech_to_text_module/demo_speech_to_text.py` 当前能通过 `SpeechInputService.listen() -> str` 得到自然语言文本。 | 在 AgenticLab 侧新增 thin adapter，不要让 planner 直接 import demo 脚本。 |
+| Voice STT | ✅ 包内模块可用 | `agenticlab_human.voice.SpeechInputService.listen() -> str` 当前可作为语音输入入口。 | 通过 `voice_to_planner` 调用包内 service，不要让 planner 直接 import demo 脚本。 |
 | Voice → Planner | ⚠️ Adapter 已新增，待端到端验证 | `src/agenticlab_human/planning/voice_to_planner.py` 已负责 listen / 指定 image path 或 camera 取图 / 调用 planner / 保存 session。 | 用 `--scene-source camera --camera-name FemtoBolt` 跑通真实 STT → Camera → Planner。 |
 | Scene image 输入 | ✅ image path 与 camera provider 已接入 | `TaskParser` 需要 `scene_image: PIL.Image`；`voice_to_planner` 现在支持静态图和 `cam_capture.CameraCapture.capture_pil()`。 | 后续按需把相机参数、曝光/分辨率等配置化。 |
 | Executor/backend | ⚠️ 正在补骨架 | `src/agenticlab_human/execution/` 需要新增 `ActionBackend`、`ActionExecutor`、`ExecutionContext`、perception/grasp backend 抽象。 | 第一版先支持 dry-run 和同步 prepare cache，不直接接真实机器人。 |
@@ -282,7 +282,7 @@ PYTHONPATH=src /usr/bin/python3 -m agenticlab_human.execution.action \
 ### 当前进度结论
 
 - **Planning isolation：约 70% 完成。** Planner 已能单独从文本 + 图像产出持久化 plan，ActionSequence 也已经是可加载、可序列化的中间产物。
-- **Voice-triggered planning readiness：约 40% 完成。** STT 和 Planner 两端都可独立工作，但中间缺一个稳定 adapter；最重要的缺口不是文本，而是 `scene_image` 获取和配置边界。
+- **Voice-triggered planning readiness：约 40% 完成。** STT 和 Planner 两端都可独立工作，包内 adapter 已有；最重要的缺口不是文本，而是 `scene_image` 获取和配置边界。
 - **Executor decoupling：约 25% 完成。** 契约已准备好，下一步落 dry-run executor + backend/context protocol；真实机器人执行仍需平台 backend。
 
 
@@ -403,7 +403,7 @@ class VoiceTriggeredPlanner:
 
 ### 集成前置条件
 
-- `speech_to_text_module` 应作为外部依赖或子模块被 AgenticLab adapter 调用；不要 import `demo_speech_to_text.py`，只 import `SpeechInputService`。
+- `SpeechInputService` 已迁入 `agenticlab_human.voice` 包；adapter 应从包内导入服务，不要 import `demo_speech_to_text.py`。
 - `TaskParser` 的 config 路径要固定为 AgenticLab repo 内的 `configs/planning/task_parser_config.yaml`。
 - voice 触发入口必须显式接收 `--scene-source image --image-path ...` 或 `--scene-source camera --camera-name ...`，因为 STT 只能提供文本，无法替代 VLM planner 的 scene image。
 - planner 输出的 session dir 要返回给上层，方便 executor、调试 UI、日志系统继续读取。
