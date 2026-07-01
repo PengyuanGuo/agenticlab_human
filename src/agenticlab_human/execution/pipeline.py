@@ -25,6 +25,11 @@ from agenticlab_human.execution.robot.x5.client import (
     X5HTTPClient,
     save_rgbd_frame,
 )
+from agenticlab_human.execution.robot.x5.conversion import degrees_to_radians
+from agenticlab_human.execution.robot.x5.grasp_feasibility import (
+    GraspFeasibilityConfig,
+    select_feasible_grasps,
+)
 from agenticlab_human.execution.robot.x5.x5_remote_backend import (
     RemoteX5ActionBackend,
 )
@@ -61,6 +66,19 @@ class PickGripVerification:
     max_retries: int
 
 
+@dataclass(frozen=True)
+class _PickScene:
+    snapshot: SceneSnapshot
+    detection: DetectionResult
+    bbox: BBox
+
+
+@dataclass(frozen=True)
+class _GraspPlanningResult:
+    grasps: list[GraspCandidate]
+    scene: _PickScene
+
+
 class ExecutionRuntime:
     """State retained across one X5 pick-and-place session."""
 
@@ -76,6 +94,8 @@ class ExecutionRuntime:
         place_offset_world_x_m: float,
         place_support_motion: PlaceSupportArmMotion | None = None,
         pick_grip_verification: PickGripVerification | None = None,
+        grasp_feasibility_config: GraspFeasibilityConfig | None = None,
+        grasp_replan_attempts: int = 0,
     ) -> None:
         self.x5_client = x5_client
         self.detector = detector
@@ -85,6 +105,8 @@ class ExecutionRuntime:
         self.place_depth_patch_px = int(place_depth_patch_px)
         self.place_offset_world_x_m = float(place_offset_world_x_m)
         self.place_support_motion = place_support_motion
+        self.grasp_feasibility_config = grasp_feasibility_config
+        self.grasp_replan_attempts = int(grasp_replan_attempts)
         self.place_support_current_torso_deg = (
             list(place_support_motion.home_torso_deg)
             if place_support_motion is not None
@@ -169,11 +191,13 @@ class ExecutionRuntime:
 def capture_scene_from_x5_server(
     client: X5HTTPClient,
     save_dir: str | Path,
+    *,
+    stem: str | None = None,
 ) -> SceneSnapshot:
     """Capture one aligned frame, save it once, and return its paths."""
 
     frame = client.capture_rgbd()
-    paths = save_rgbd_frame(frame, save_dir)
+    paths = save_rgbd_frame(frame, save_dir, stem=stem)
     return SceneSnapshot(
         frame=frame,
         rgb_path=paths["rgb"],
@@ -197,24 +221,17 @@ def execute_pick(
         runtime.require_initialized()
         claimed_action_id = runtime.claim_action_id(action_id)
         stage_dir = runtime.action_stage_dir(claimed_action_id, "pick")
-        snapshot = capture_scene_from_x5_server(runtime.x5_client, stage_dir)
-        rgb_image = Image.fromarray(snapshot.frame.rgb, mode="RGB")
-        detection = runtime.detector.detect(rgb_image, [object_name])
-        selected_detection, bbox = _select_detection(detection, object_name)
-        _save_detection(runtime.detector, rgb_image, selected_detection, stage_dir)
+        scene = _capture_pick_scene(runtime, object_name, stage_dir)
 
-        grasps = runtime.grasp_backend.plan_for_object(
-            rgb_path=snapshot.rgb_path,
-            depth_path=snapshot.depth_path,
-            bbox=bbox,
-            object_name=object_name,
+        plan_result = _plan_feasible_grasps_with_retries(
+            runtime,
+            object_name,
+            initial_scene=scene,
+            stage_dir=stage_dir,
         )
-        if not grasps:
-            raise RuntimeError(f"no grasp candidate available for {object_name}")
-        _write_json(
-            stage_dir / "grasp_candidates.json",
-            [_grasp_to_dict(candidate) for candidate in grasps],
-        )
+        scene = plan_result.scene
+        bbox = scene.bbox
+        grasps = plan_result.grasps
 
         runtime.context.bboxes[object_name] = [bbox]
         runtime.context.grasps[object_name] = grasps
@@ -230,7 +247,7 @@ def execute_pick(
             pddl_str=pddl_str,
         )
         result = runtime.executor.execute_action(action)
-        result.metadata.setdefault("scene", snapshot.to_dict())
+        result.metadata.setdefault("scene", scene.snapshot.to_dict())
         result.metadata.setdefault("stage_dir", str(stage_dir))
         if result.success:
             runtime.held_object = object_name
@@ -490,7 +507,7 @@ def execute_place(
         rgb_image = Image.fromarray(snapshot.frame.rgb, mode="RGB")
         detection = runtime.detector.detect(rgb_image, [target_name])
         selected_detection, bbox = _select_detection(detection, target_name)
-        selected_detection.set_random_obj_point(margin_ratio=0)
+        selected_detection.set_random_obj_point(margin_ratio=0.25)
         target_pixel = selected_detection.get_object_center()
         if target_pixel is None:
             raise RuntimeError(f"no place pixel available for {target_name}")
@@ -888,6 +905,11 @@ def create_x5_execution_runtime(
             x5_pick_config,
             default_arm=str(pipeline_config.get("arm", "left")),
         ),
+        grasp_feasibility_config=_load_grasp_feasibility_config(
+            robot_config,
+            x5_pick_config,
+        ),
+        grasp_replan_attempts=_load_grasp_replan_attempts(x5_pick_config),
     )
     _write_json(
         run_dir / "run.json",
@@ -911,6 +933,21 @@ def create_x5_execution_runtime(
             "default_place_orientation_rotvec": (
                 runtime_action_backend.default_place_orientation_rotvec.tolist()
             ),
+            "grasp_feasibility": (
+                None
+                if runtime.grasp_feasibility_config is None
+                else {
+                    "soft_limit_margin_deg": (
+                        runtime.grasp_feasibility_config.soft_limit_margin_deg
+                    ),
+                    "movel_sample_step_m": (
+                        runtime.grasp_feasibility_config.movel_sample_step_m
+                    ),
+                    "inverse_type": runtime.grasp_feasibility_config.inverse_type,
+                    "max_candidates": runtime.grasp_feasibility_config.max_candidates,
+                }
+            ),
+            "grasp_replan_attempts": runtime.grasp_replan_attempts,
         },
     )
     return runtime
@@ -997,6 +1034,256 @@ def _load_pick_grip_verification(
         expected_grip_status=expected_status,
         max_retries=max_retries,
     )
+
+
+def _load_grasp_feasibility_config(
+    robot_config: dict[str, Any],
+    x5_pick_config: dict[str, Any],
+) -> GraspFeasibilityConfig | None:
+    if x5_pick_config.get("check_grasp_feasibility", True) is False:
+        return None
+
+    robot = robot_config["robot"]
+    sample_step_m = _finite_float(
+        x5_pick_config.get("grasp_movel_sample_step_m", 0.01),
+        "x5_pick.grasp_movel_sample_step_m",
+    )
+    if sample_step_m <= 0.0:
+        raise ValueError("x5_pick.grasp_movel_sample_step_m must be positive")
+
+    inverse_type = int(x5_pick_config.get("grasp_ik_inverse_type", 0))
+    if inverse_type not in (0, 1, 2):
+        raise ValueError("x5_pick.grasp_ik_inverse_type must be 0, 1, or 2")
+
+    max_candidates = x5_pick_config.get("grasp_feasibility_max_candidates")
+    if max_candidates is not None:
+        max_candidates = int(max_candidates)
+        if max_candidates <= 0:
+            raise ValueError(
+                "x5_pick.grasp_feasibility_max_candidates must be positive"
+            )
+
+    return GraspFeasibilityConfig(
+        joint_limits_deg=_required_vector_pairs(
+            robot,
+            "joint_limits_deg",
+            "robot.joint_limits_deg",
+        ),
+        soft_limit_margin_deg=_finite_float(
+            x5_pick_config.get("grasp_soft_limit_margin_deg", 3.0),
+            "x5_pick.grasp_soft_limit_margin_deg",
+        ),
+        movel_sample_step_m=sample_step_m,
+        inverse_type=inverse_type,
+        max_candidates=max_candidates,
+    )
+
+
+def _load_grasp_replan_attempts(x5_pick_config: dict[str, Any]) -> int:
+    attempts = int(x5_pick_config.get("grasp_replan_attempts", 0))
+    if attempts < 0:
+        raise ValueError("x5_pick.grasp_replan_attempts must be non-negative")
+    return attempts
+
+
+def _capture_pick_scene(
+    runtime: ExecutionRuntime,
+    object_name: str,
+    stage_dir: Path,
+) -> _PickScene:
+    snapshot = capture_scene_from_x5_server(
+        runtime.x5_client,
+        stage_dir,
+        stem="pick_scene",
+    )
+    rgb_image = Image.fromarray(snapshot.frame.rgb, mode="RGB")
+    detection = runtime.detector.detect(rgb_image, [object_name])
+    selected_detection, bbox = _select_detection(detection, object_name)
+    _save_detection(runtime.detector, rgb_image, selected_detection, stage_dir)
+    return _PickScene(
+        snapshot=snapshot,
+        detection=selected_detection,
+        bbox=bbox,
+    )
+
+
+def _plan_feasible_grasps_with_retries(
+    runtime: ExecutionRuntime,
+    object_name: str,
+    *,
+    initial_scene: _PickScene,
+    stage_dir: Path,
+) -> _GraspPlanningResult:
+    max_attempts = runtime.grasp_replan_attempts + 1
+    attempts: list[dict[str, Any]] = []
+    last_error = f"no grasp candidate available for {object_name}"
+    scene = initial_scene
+
+    for attempt_index in range(1, max_attempts + 1):
+        attempt_prefix = f"grasp_attempt_{attempt_index:03d}"
+        if attempt_index > 1:
+            try:
+                scene = _capture_pick_scene(runtime, object_name, stage_dir)
+            except Exception as exc:
+                last_error = str(exc)
+                attempts.append(
+                    {
+                        "attempt": attempt_index,
+                        "success": False,
+                        "error": last_error,
+                        "raw_count": 0,
+                        "feasible_count": 0,
+                    }
+                )
+                _write_json(stage_dir / "grasp_replan_attempts.json", attempts)
+                if attempt_index < max_attempts:
+                    continue
+                raise
+
+        _write_pick_scene_attempt(stage_dir, attempt_prefix, scene)
+        try:
+            raw_grasps = runtime.grasp_backend.plan_for_object(
+                rgb_path=scene.snapshot.rgb_path,
+                depth_path=scene.snapshot.depth_path,
+                bbox=scene.bbox,
+                object_name=object_name,
+            )
+        except Exception as exc:
+            last_error = str(exc)
+            attempts.append(
+                {
+                    "attempt": attempt_index,
+                    "success": False,
+                    "error": last_error,
+                    "raw_count": 0,
+                    "feasible_count": 0,
+                    **_pick_scene_attempt_summary(scene),
+                }
+            )
+            _write_json(stage_dir / "grasp_replan_attempts.json", attempts)
+            if attempt_index < max_attempts:
+                continue
+            raise
+
+        _write_grasp_candidates(
+            stage_dir,
+            raw_grasps,
+            base_name="grasp_candidates",
+            attempt_prefix=f"{attempt_prefix}_candidates",
+        )
+        if not raw_grasps:
+            last_error = f"no grasp candidate available for {object_name}"
+            attempts.append(
+                {
+                    "attempt": attempt_index,
+                    "success": False,
+                    "error": last_error,
+                    "raw_count": 0,
+                    "feasible_count": 0,
+                    **_pick_scene_attempt_summary(scene),
+                }
+            )
+            _write_json(stage_dir / "grasp_replan_attempts.json", attempts)
+            if attempt_index < max_attempts:
+                continue
+            raise RuntimeError(last_error)
+
+        if runtime.grasp_feasibility_config is None:
+            attempts.append(
+                {
+                    "attempt": attempt_index,
+                    "success": True,
+                    "error": None,
+                    "raw_count": len(raw_grasps),
+                    "feasible_count": len(raw_grasps),
+                    **_pick_scene_attempt_summary(scene),
+                }
+            )
+            _write_json(stage_dir / "grasp_replan_attempts.json", attempts)
+            return _GraspPlanningResult(grasps=raw_grasps, scene=scene)
+
+        selection = select_feasible_grasps(
+            candidates=raw_grasps,
+            ik_client=runtime.x5_client,
+            arm=runtime.action_backend.arm,
+            T_world_camera=runtime.T_world_camera,
+            approach_distance_m=runtime.action_backend.config.approach_distance_m,
+            config=runtime.grasp_feasibility_config,
+            seed_joints_rad=degrees_to_radians(
+                runtime.action_backend.config.home_joints_deg
+            ),
+        )
+        _write_json(stage_dir / "grasp_feasibility.json", selection.to_dict())
+        _write_json(
+            stage_dir / f"{attempt_prefix}_feasibility.json",
+            selection.to_dict(),
+        )
+        feasible_grasps = selection.feasible_candidates
+        _write_grasp_candidates(
+            stage_dir,
+            feasible_grasps,
+            base_name="grasp_candidates_feasible",
+            attempt_prefix=f"{attempt_prefix}_candidates_feasible",
+        )
+        last_error = f"no IK-feasible grasp candidate available for {object_name}"
+        attempts.append(
+            {
+                "attempt": attempt_index,
+                "success": bool(feasible_grasps),
+                "error": None if feasible_grasps else last_error,
+                "raw_count": len(raw_grasps),
+                "feasible_count": len(feasible_grasps),
+                **_pick_scene_attempt_summary(scene),
+            }
+        )
+        _write_json(stage_dir / "grasp_replan_attempts.json", attempts)
+        if feasible_grasps:
+            return _GraspPlanningResult(grasps=feasible_grasps, scene=scene)
+
+    raise RuntimeError(last_error)
+
+
+def _write_pick_scene_attempt(
+    stage_dir: Path,
+    attempt_prefix: str,
+    scene: _PickScene,
+) -> None:
+    _write_json(
+        stage_dir / f"{attempt_prefix}_scene.json",
+        {
+            **scene.snapshot.to_dict(),
+            "bbox": _bbox_xyxy(scene.bbox),
+        },
+    )
+    _write_json(
+        stage_dir / f"{attempt_prefix}_detection.json",
+        scene.detection.output_to_json,
+    )
+
+
+def _pick_scene_attempt_summary(scene: _PickScene) -> dict[str, Any]:
+    return {
+        "frame_id": scene.snapshot.frame.frame_id,
+        "rgb_path": str(scene.snapshot.rgb_path),
+        "depth_path": str(scene.snapshot.depth_path),
+        "bbox": _bbox_xyxy(scene.bbox),
+    }
+
+
+def _bbox_xyxy(bbox: BBox) -> list[float]:
+    return [float(value) for value in bbox.xyxy]
+
+
+def _write_grasp_candidates(
+    stage_dir: Path,
+    candidates: Sequence[GraspCandidate],
+    *,
+    base_name: str,
+    attempt_prefix: str,
+) -> None:
+    payload = [_grasp_to_dict(candidate) for candidate in candidates]
+    _write_json(stage_dir / f"{base_name}.json", payload)
+    _write_json(stage_dir / f"{attempt_prefix}.json", payload)
 
 
 def _select_detection(
@@ -1151,6 +1438,21 @@ def _required_vector(
     if key not in mapping:
         raise ValueError(f"{name} is required")
     return _finite_vector(mapping[key], size, name).tolist()
+
+
+def _required_vector_pairs(
+    mapping: dict[str, Any],
+    key: str,
+    name: str,
+) -> list[list[float]]:
+    if key not in mapping:
+        raise ValueError(f"{name} is required")
+    values = np.asarray(mapping[key], dtype=float)
+    if values.shape != (7, 2) or not np.all(np.isfinite(values)):
+        raise ValueError(f"{name} must contain 7 finite [lower, upper] pairs")
+    if np.any(values[:, 0] >= values[:, 1]):
+        raise ValueError(f"{name} lower bounds must be less than upper bounds")
+    return values.tolist()
 
 
 def _finite_vector(

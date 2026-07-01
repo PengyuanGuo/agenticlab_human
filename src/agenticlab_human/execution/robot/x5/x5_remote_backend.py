@@ -226,7 +226,7 @@ class RemoteX5ActionBackend:
         target_bbox: Optional[BBox] = None,
         target_pose: Any = None,
     ) -> ActionResult:
-        """preplace -> place -> open -> home."""
+        """preplace -> place -> open -> preplace -> home."""
 
         self._require_initialized()
         if not self._holding_object:
@@ -262,6 +262,13 @@ class RemoteX5ActionBackend:
             )
             completed_steps.append(self._open_gripper())
             self._holding_object = False
+            completed_steps.append(
+                self._movel(
+                    plan["preplace_pose_xyz_rotvec"],
+                    self.config.place_approach_speed_ratio,
+                    "preplace",
+                )
+            )
             completed_steps.extend(
                 self._move_joint_target(self.config.home_joints_deg, "home")
             )

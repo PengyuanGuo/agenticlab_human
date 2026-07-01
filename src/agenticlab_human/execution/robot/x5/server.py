@@ -225,7 +225,7 @@ def create_app(
             accepted_command,
         )
         try:
-            await runtime.execute(request.command)
+            command_metadata = await runtime.execute(request.command)
             state_after = await runtime.robot_state()
             return RobotCommandResponse(
                 request_id=request.request_id,
@@ -235,8 +235,13 @@ def create_app(
                 state_after=state_after,
                 server_timestamp_ns=time.time_ns(),
                 duration_ms=(time.perf_counter_ns() - started_ns) / 1_000_000.0,
+                metadata=(
+                    command_metadata
+                    if isinstance(command_metadata, dict)
+                    else {}
+                ),
             )
-        except (RuntimeError, ValueError) as exc:
+        except Exception as exc:
             state_after = await runtime.robot_state()
             response = RobotCommandResponse(
                 request_id=request.request_id,
@@ -247,6 +252,7 @@ def create_app(
                 server_timestamp_ns=time.time_ns(),
                 duration_ms=(time.perf_counter_ns() - started_ns) / 1_000_000.0,
                 error=str(exc),
+                metadata={"error_type": type(exc).__name__},
             )
             return JSONResponse(status_code=400, content=response.model_dump(mode="json"))
 

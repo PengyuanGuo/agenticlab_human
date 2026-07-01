@@ -7,5 +7,5 @@ Graspnet:
   approach_dist: 0.05
   num_point: 15000
   seed_feat_dim: 512
-  angle_threshold: 20
-  grasp_max_width: 0.08
+  angle_threshold: 30
+  grasp_max_width: 0.09

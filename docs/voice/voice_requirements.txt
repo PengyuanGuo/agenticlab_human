@@ -14,9 +14,10 @@ torchaudio
 funasr
 modelscope
 
+# You can install your own choice of torch version, on H1 humanoid robot, we use pytorch 2.12.0+cu126
 # x86 Linux CPU-only PyTorch wheel, if needed:
 # python -m pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
 #
-# Jetson note:
+# !!! Jetson note !!!:
 # Do not install generic torch/torchaudio wheels on JetPack. Use NVIDIA's
 # matching prebuilt wheels instead.

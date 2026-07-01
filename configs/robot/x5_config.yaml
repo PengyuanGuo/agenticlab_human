@@ -82,8 +82,8 @@ robot:
       tf_no: 1
       position_m: [0.0, 0.0, 0.17]
       rpy_deg: [0.0, 0.0, 0.0]
-    home_joints_deg: [-24, 10, -53, 102, 101, 80, -18] # gripper facing down
-    # check_gripper_joints_deg: [-15, 24, -64, 89, 44, 74, -2] # robot checks the gripper position
+    # home_joints_deg: [-24, 10, -53, 102, 101, 80, -18] # gripper facing down
+    home_joints_deg: [-63, 9, -11, 99, 95, 79, -20] # new home pose
     check_gripper_joints_deg: [-64, 37, -16, 95, 108, 86, -40]
     head_joints_deg: [0, 28]
     # home_joints_deg: [-49, 55, -18, 90, 0, 100, -18] # calibration home pose
@@ -93,12 +93,12 @@ robot:
     tool_frame:
       tf_no: 0
     home_joints_deg: [74, 32, 0, 99, -100, 77, 46] # gripper facing down
-    pre_grasp_joints_deg: [74, 68, 0, 74, -100, 84, 148] # right hand approch pose for bin
-    grasp_joints_deg: [65, 72, 0, 65, -106, 77, 144] # right hand grasp pose for bin
-    pour_joints_deg: [75, 75, -7, 67, -111, 100, 149] # right hand pour pose for bin
+    pre_grasp_joints_deg: [76, 44, 0, 78, -73, 63, 29] # right hand approch pose for bin
+    grasp_joints_deg: [66, 54, 0, 68, -87, 59, 31] # right hand grasp pose for bin
+    pour_joints_deg: [77, 49, 0, 79, -95, 77, 42] # right hand pour pose for bin
     torso_joints_deg: [0]
     home_torso_deg: [0] # right hand don't have E3, may need to check avalability
-    pre_grasp_torso_deg: [8.0]
-    pour_torso_deg: [23]
-    place_torso_deg: [-15.0]
+    pre_grasp_torso_deg: [0] 
+    pour_torso_deg: [18]
+    place_torso_deg: [-20.0]
     check_gripper_joints_deg: [-64, 37, -16, 95, 108, 86, -40] # mock check gripper to pass check

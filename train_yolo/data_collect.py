@@ -26,6 +26,7 @@ AGENTICLAB_CLASSES = (
     "number_block_3",
     "paper_cup",
     "yellow_bin",
+    "red_bin",
 )
 SUPPORTED_CAMERAS = ("Orbbec", "FemtoBolt", "Gemini305", "Gemini335")
 

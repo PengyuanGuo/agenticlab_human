@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from agenticlab_human.execution.robot.x5.contracts import (
+    CheckIKPointCommand,
     InitGripperCommand,
     MoveJPointCommand,
     MoveJointsCommand,
@@ -80,6 +81,7 @@ class FakeX5API:
     def __init__(self):
         self.calls = []
         self.current_joint = FakeJoint(-24, 10, -53, 102, 101, 80, -18, 0, 28)
+        self.ik_result = FakeJoint(-20, 12, -50, 100, 98, 78, -16)
         self.current_point = FakePoint(
             (100, 200, 300, 0, 0, 90, -18, 0, 28),
             0,
@@ -153,6 +155,10 @@ class FakeX5API:
     def movl(self, handle, target, add_data=None):
         self.calls.append(("movl", handle, target, add_data))
         self.current_point = target
+
+    def cnvrt_j(self, handle, target, inverse_type, last_joint):
+        self.calls.append(("cnvrt_j", handle, target, inverse_type, last_joint))
+        return self.ik_result
 
     def wait_cmd_send_done(self, handle):
         self.calls.append(("wait_cmd_send_done", handle))
@@ -572,5 +578,55 @@ def test_known_anygrasp_world_pose_builds_expected_x5_point_without_motion():
     assert [point.pose.e1, point.pose.e2, point.pose.e3] == pytest.approx(
         [-18.0, 0.0, 28.0]
     )
+    assert "movj" not in [call[0] for call in fake_x5.calls]
+    assert "movl" not in [call[0] for call in fake_x5.calls]
+
+
+def test_real_x5_controller_check_ik_uses_sdk_without_motion():
+    fake_x5 = FakeX5API()
+    controller = _build_controller(fake_x5)
+
+    result = controller.execute(
+        CheckIKPointCommand(
+            arm="left",
+            tcp_pose_xyz_rotvec=[0.1, 0.2, 0.305, 0.0, 0.0, math.pi / 2.0],
+            inverse_type=0,
+            seed_joints_rad=[
+                math.radians(value)
+                for value in [-24, 10, -53, 102, 101, 80, -18]
+            ],
+        )
+    )
+
+    cnvrt_call = next(call for call in fake_x5.calls if call[0] == "cnvrt_j")
+    _, handle, target, inverse_type, last_joint = cnvrt_call
+    assert handle == 0
+    assert target.pose.x == pytest.approx(100.0)
+    assert target.pose.e1 == pytest.approx(-18.0)
+    assert inverse_type == 0
+    assert last_joint.j1 == pytest.approx(-24.0)
+    assert result["ik_joints_deg"] == pytest.approx(
+        [-20.0, 12.0, -50.0, 100.0, 98.0, 78.0, -16.0]
+    )
+    assert result["ik_joints_rad"] == pytest.approx(
+        [math.radians(value) for value in result["ik_joints_deg"]]
+    )
+    assert "movj" not in [call[0] for call in fake_x5.calls]
+    assert "movl" not in [call[0] for call in fake_x5.calls]
+
+
+def test_real_x5_controller_check_ik_rejects_joint_limit_violation():
+    fake_x5 = FakeX5API()
+    fake_x5.ik_result = FakeJoint(-20, 95, -50, 100, 98, 78, -16)
+    controller = _build_controller(fake_x5)
+
+    with pytest.raises(ValueError, match="outside configured limit"):
+        controller.execute(
+            CheckIKPointCommand(
+                arm="left",
+                tcp_pose_xyz_rotvec=[0.1, 0.2, 0.305, 0.0, 0.0, math.pi / 2.0],
+            )
+        )
+
     assert "movj" not in [call[0] for call in fake_x5.calls]
     assert "movl" not in [call[0] for call in fake_x5.calls]

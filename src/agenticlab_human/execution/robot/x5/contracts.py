@@ -175,6 +175,41 @@ class MoveLPointCommand(CartesianPointCommand):
     type: Literal["movel_point"] = "movel_point"
 
 
+class CheckIKPointCommand(BaseModel):
+    """Check SDK IK for a world-frame TCP target without moving the robot."""
+
+    type: Literal["check_ik_point"] = "check_ik_point"
+    arm: ArmName
+    tcp_pose_xyz_rotvec: list[float] = Field(min_length=6, max_length=6)
+    inverse_type: int = Field(default=0, ge=0, le=2)
+    seed_joints_rad: Optional[list[float]] = Field(
+        default=None,
+        min_length=7,
+        max_length=7,
+    )
+
+    @field_validator("tcp_pose_xyz_rotvec")
+    @classmethod
+    def validate_finite_pose(cls, values: list[float]) -> list[float]:
+        converted = [float(value) for value in values]
+        if not all(np.isfinite(value) for value in converted):
+            raise ValueError("tcp_pose_xyz_rotvec values must be finite")
+        return converted
+
+    @field_validator("seed_joints_rad")
+    @classmethod
+    def validate_finite_seed(
+        cls,
+        values: Optional[list[float]],
+    ) -> Optional[list[float]]:
+        if values is None:
+            return None
+        converted = [float(value) for value in values]
+        if not all(np.isfinite(value) for value in converted):
+            raise ValueError("seed_joints_rad values must be finite")
+        return converted
+
+
 class StopCommand(BaseModel):
     type: Literal["stop"] = "stop"
     arm: ArmTarget = "all"
@@ -202,6 +237,7 @@ RobotCommand = Annotated[
         MoveJointsCommand,
         MoveJPointCommand,
         MoveLPointCommand,
+        CheckIKPointCommand,
         InitGripperCommand,
         SetGripperCommand,
         StopCommand,
@@ -224,6 +260,7 @@ class RobotCommandResponse(BaseModel):
     server_timestamp_ns: int
     duration_ms: float
     error: Optional[str] = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
 def encode_rgbd_frame(frame: RGBDFrame) -> bytes:

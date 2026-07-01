@@ -13,7 +13,10 @@ from agenticlab_human.execution.robot.x5.contracts import (
     RobotCommand,
     RobotState,
 )
-from agenticlab_human.execution.robot.x5.conversion import rotvec_to_quat_xyzw
+from agenticlab_human.execution.robot.x5.conversion import (
+    radians_to_degrees,
+    rotvec_to_quat_xyzw,
+)
 
 
 class MockX5Controller:
@@ -70,6 +73,13 @@ class MockX5Controller:
                 state.tcp_pose_xyzw = xyz + list(quaternion)
                 state.moving = False
                 return
+            if command.type == "check_ik_point":
+                state = self._require_arm(command.arm)
+                return {
+                    "ik_joints_rad": list(state.joints_rad),
+                    "ik_joints_deg": radians_to_degrees(state.joints_rad),
+                    "inverse_type": command.inverse_type,
+                }
             if command.type == "stop":
                 for state in self._selected_states(command.arm):
                     state.moving = False

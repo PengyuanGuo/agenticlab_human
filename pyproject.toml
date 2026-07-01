@@ -22,7 +22,7 @@ voice = [
     "soundfile",
     "PyAudio",
     "pynput>=1.8.2",
-    "torch",
+    "torch",         # if you want to use your own choice of torch, ignore this
     "torchaudio",
     "funasr",
     "modelscope",

@@ -12,6 +12,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from agenticlab_human.execution.robot.x5.contracts import (
     ArmState,
+    CheckIKPointCommand,
     ComponentHealth,
     MoveJPointCommand,
     MoveJointsCommand,
@@ -35,7 +36,7 @@ class X5Controller(Protocol):
     def initialize(self) -> None:
         """Connect and prepare robot resources."""
 
-    def execute(self, command: RobotCommand) -> None:
+    def execute(self, command: RobotCommand) -> Any | None:
         """Execute one validated low-level command."""
 
     def get_state(self) -> RobotState:
@@ -194,6 +195,8 @@ class RealX5Controller:
             if command_type == "movel_point":
                 self._move_point(command, motion="movl")
                 return
+            if command_type == "check_ik_point":
+                return self._check_ik_point(command)
             raise ValueError(
                 f"unsupported X5 arm command type={command_type!r} "
                 f"class={type(command).__module__}.{type(command).__name__}"
@@ -493,6 +496,46 @@ class RealX5Controller:
         if command.wait:
             self._wait_move_done(handle)
 
+    def _check_ik_point(self, command: CheckIKPointCommand) -> dict[str, Any]:
+        handle = self._require_handle(command.arm)
+        pose6d = _six_finite_floats(command.tcp_pose_xyz_rotvec)
+        x5 = self._load_x5()
+        cnvrt_j = getattr(x5, "cnvrt_j", None)
+        if cnvrt_j is None:
+            raise RuntimeError("xapi.cnvrt_j is unavailable")
+
+        if command.seed_joints_rad is None:
+            last_joint = x5.get_cjoint(handle)
+        else:
+            last_joint = self._make_joint(
+                command.arm,
+                radians_to_degrees(command.seed_joints_rad),
+            )
+        target = self._make_point(
+            command.arm,
+            handle,
+            pose6d,
+            motion="check_ik",
+            reference_joint=last_joint,
+        )
+
+        ik_result = cnvrt_j(
+            handle,
+            target,
+            int(command.inverse_type),
+            last_joint,
+        )
+        if ik_result is None or ik_result is False:
+            raise RuntimeError("xapi.cnvrt_j returned no IK solution")
+
+        joints_deg = _joint_to_degrees(ik_result)
+        self._check_joint_limits(command.arm, joints_deg)
+        return {
+            "ik_joints_deg": joints_deg,
+            "ik_joints_rad": degrees_to_radians(joints_deg),
+            "inverse_type": int(command.inverse_type),
+        }
+
     # Safety validation. Keep limits separate from the motion command flow.
 
     def _check_speed_ratio(self, speed_ratio: float) -> None:
@@ -508,15 +551,7 @@ class RealX5Controller:
         current_deg: Sequence[float],
         target_deg: Sequence[float],
     ) -> None:
-        for index, (value, (lower, upper)) in enumerate(
-            zip(target_deg, self._joint_limits_deg, strict=True),
-            start=1,
-        ):
-            if value < lower or value > upper:
-                raise ValueError(
-                    f"{arm} joint {index} target {value:.3f} deg is outside "
-                    f"configured limit [{lower:.3f}, {upper:.3f}] deg"
-                )
+        self._check_joint_limits(arm, target_deg)
 
         max_delta = max(
             abs(target - current)
@@ -528,6 +563,21 @@ class RealX5Controller:
                 f"configured max_joint_delta_deg {self._max_joint_delta_deg:.3f}"
             )
 
+    def _check_joint_limits(
+        self,
+        arm: str,
+        target_deg: Sequence[float],
+    ) -> None:
+        for index, (value, (lower, upper)) in enumerate(
+            zip(target_deg, self._joint_limits_deg, strict=True),
+            start=1,
+        ):
+            if value < lower or value > upper:
+                raise ValueError(
+                    f"{arm} joint {index} target {value:.3f} deg is outside "
+                    f"configured limit [{lower:.3f}, {upper:.3f}] deg"
+                )
+
     # xapi object construction and SDK-version compatibility.
 
     def _make_point(
@@ -537,6 +587,7 @@ class RealX5Controller:
         tcp_pose_xyz_rotvec: Sequence[float],
         *,
         motion: str = "point",
+        reference_joint: Any | None = None,
     ) -> Any:
         x5 = self._load_x5()
         point_cls = getattr(x5, "Point", None)
@@ -544,7 +595,11 @@ class RealX5Controller:
             raise RuntimeError("xapi.Point is unavailable")
 
         reference = self._read_reference_point(handle)
-        current_joint = x5.get_cjoint(handle)
+        current_joint = (
+            reference_joint
+            if reference_joint is not None
+            else x5.get_cjoint(handle)
+        )
         cfg = _point_cfg(reference)
         tf_no = self._active_tool_frame_nos.get(
             arm,

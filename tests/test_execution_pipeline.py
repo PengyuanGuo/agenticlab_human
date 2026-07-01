@@ -14,6 +14,9 @@ from agenticlab_human.execution.pipeline import (
     execute_pick,
     execute_place,
 )
+from agenticlab_human.execution.robot.x5.grasp_feasibility import (
+    GraspFeasibilityConfig,
+)
 from agenticlab_human.execution.robot.x5.contracts import (
     CameraIntrinsics,
     RGBDFrame,
@@ -117,6 +120,44 @@ class FakeX5Client:
             duration_ms=1.0,
         )
 
+    def check_ik_point(
+        self,
+        arm,
+        pose6d,
+        *,
+        inverse_type=0,
+        seed_joints_rad=None,
+        request_id=None,
+    ):
+        self.response_count += 1
+        self.calls.append(
+            (
+                "check_ik_point",
+                arm,
+                list(pose6d),
+                inverse_type,
+                None if seed_joints_rad is None else list(seed_joints_rad),
+            )
+        )
+        if pose6d[0] > 0.15:
+            return SimpleNamespace(
+                success=False,
+                error="IK rejected high-x candidate",
+                request_id=f"pipeline-{self.response_count}",
+                duration_ms=1.0,
+                metadata={},
+            )
+        return SimpleNamespace(
+            success=True,
+            error=None,
+            request_id=f"pipeline-{self.response_count}",
+            duration_ms=1.0,
+            metadata={
+                "ik_joints_rad": [0.0] * 7,
+                "ik_joints_deg": [0.0] * 7,
+            },
+        )
+
     def init_gripper(self, *, arm):
         self.response_count += 1
         self.calls.append(("init_gripper", arm))
@@ -160,8 +201,10 @@ class FakeDetector:
 
 
 class FakeGraspBackend:
-    def __init__(self):
+    def __init__(self, candidates=None):
         self.initialized = False
+        self.candidates = candidates
+        self.plan_calls = 0
 
     def initialize(self):
         self.initialized = True
@@ -171,6 +214,12 @@ class FakeGraspBackend:
 
     def plan_for_object(self, *, bbox, object_name, **kwargs):
         assert self.initialized is True
+        self.plan_calls += 1
+        if self.candidates is not None:
+            if self.candidates and isinstance(self.candidates[0], list):
+                index = min(self.plan_calls - 1, len(self.candidates) - 1)
+                return list(self.candidates[index])
+            return list(self.candidates)
         return [
             GraspCandidate(
                 pose=np.eye(4),
@@ -184,6 +233,11 @@ class FakeGraspBackend:
 class FakeActionBackend:
     def __init__(self):
         self.T_world_camera = np.eye(4)
+        self.arm = "left"
+        self.config = SimpleNamespace(
+            approach_distance_m=0.04,
+            home_joints_deg=[0.0] * 7,
+        )
         self.calls = []
 
     def initialize(self):
@@ -213,6 +267,9 @@ def _runtime(
     grip_statuses=None,
     pick_max_retries=1,
     init_gripper_results=None,
+    grasp_candidates=None,
+    grasp_feasibility_config=None,
+    grasp_replan_attempts=0,
 ):
     return ExecutionRuntime(
         x5_client=FakeX5Client(
@@ -220,7 +277,7 @@ def _runtime(
             init_gripper_results=init_gripper_results,
         ),
         detector=FakeDetector(),
-        grasp_backend=FakeGraspBackend(),
+        grasp_backend=FakeGraspBackend(grasp_candidates),
         action_backend=FakeActionBackend(),
         run_dir=tmp_path / "run",
         place_depth_patch_px=9,
@@ -238,6 +295,8 @@ def _runtime(
             expected_grip_status=2,
             max_retries=pick_max_retries,
         ),
+        grasp_feasibility_config=grasp_feasibility_config,
+        grasp_replan_attempts=grasp_replan_attempts,
     )
 
 
@@ -317,6 +376,116 @@ def test_execute_pick_stays_single_attempt_when_gripper_is_empty(tmp_path):
     assert "gripper_verification" not in result.metadata
     assert (
         runtime.run_dir / "action_001_pick" / "grasp_candidates.json"
+    ).exists()
+
+
+def test_execute_pick_filters_grasps_by_x5_ik_feasibility(tmp_path):
+    high_score_unreachable = GraspCandidate(
+        pose=np.eye(4),
+        score=0.95,
+        object_name="number_block_1",
+        metadata={"frame": "camera"},
+    )
+    high_score_unreachable.pose[:3, 3] = [0.25, 0.0, 0.3]
+    lower_score_safe = GraspCandidate(
+        pose=np.eye(4),
+        score=0.75,
+        object_name="number_block_1",
+        metadata={"frame": "camera"},
+    )
+    lower_score_safe.pose[:3, 3] = [0.1, 0.0, 0.3]
+    runtime = _runtime(
+        tmp_path,
+        grasp_candidates=[high_score_unreachable, lower_score_safe],
+        grasp_feasibility_config=GraspFeasibilityConfig(
+            joint_limits_deg=[[-170.0, 170.0]] * 7,
+            soft_limit_margin_deg=1.0,
+            movel_sample_step_m=0.05,
+        ),
+    )
+
+    with runtime:
+        result = execute_pick(runtime, "number_block_1")
+
+    assert result.success is True
+    pick_call = next(
+        call for call in runtime.action_backend.calls if call[0] == "pick"
+    )
+    safe_grasps = pick_call[2]["grasp_candidates"]
+    assert len(safe_grasps) == 1
+    assert safe_grasps[0].score == 0.75
+    assert safe_grasps[0].metadata["x5_feasibility"]["feasible"] is True
+    assert (
+        runtime.run_dir / "action_001_pick" / "grasp_feasibility.json"
+    ).exists()
+    check_calls = [
+        call for call in runtime.x5_client.calls if call[0] == "check_ik_point"
+    ]
+    assert check_calls
+
+
+def test_execute_pick_replans_grasps_when_all_ik_candidates_fail(tmp_path):
+    first_unreachable = GraspCandidate(
+        pose=np.eye(4),
+        score=0.95,
+        object_name="number_block_1",
+        metadata={"frame": "camera"},
+    )
+    first_unreachable.pose[:3, 3] = [0.25, 0.0, 0.3]
+    second_safe = GraspCandidate(
+        pose=np.eye(4),
+        score=0.7,
+        object_name="number_block_1",
+        metadata={"frame": "camera"},
+    )
+    second_safe.pose[:3, 3] = [0.1, 0.0, 0.3]
+    runtime = _runtime(
+        tmp_path,
+        grasp_candidates=[[first_unreachable], [second_safe]],
+        grasp_feasibility_config=GraspFeasibilityConfig(
+            joint_limits_deg=[[-170.0, 170.0]] * 7,
+            soft_limit_margin_deg=1.0,
+            movel_sample_step_m=0.05,
+        ),
+        grasp_replan_attempts=1,
+    )
+
+    with runtime:
+        result = execute_pick(runtime, "number_block_1")
+
+    assert result.success is True
+    assert runtime.x5_client.capture_count == 2
+    assert result.metadata["scene"]["frame_id"] == "frame-02"
+    assert result.metadata["scene"]["rgb_path"].endswith("pick_scene_rgb.png")
+    assert runtime.grasp_backend.plan_calls == 2
+    pick_call = next(
+        call for call in runtime.action_backend.calls if call[0] == "pick"
+    )
+    safe_grasps = pick_call[2]["grasp_candidates"]
+    assert len(safe_grasps) == 1
+    assert safe_grasps[0].score == 0.7
+    attempts = json.loads(
+        (runtime.run_dir / "action_001_pick" / "grasp_replan_attempts.json")
+        .read_text()
+    )
+    assert [attempt["feasible_count"] for attempt in attempts] == [0, 1]
+    assert (
+        runtime.run_dir / "action_001_pick" / "grasp_attempt_001_candidates.json"
+    ).exists()
+    assert (
+        runtime.run_dir
+        / "action_001_pick"
+        / "grasp_attempt_002_scene.json"
+    ).exists()
+    assert (
+        runtime.run_dir
+        / "action_001_pick"
+        / "grasp_attempt_002_candidates_feasible.json"
+    ).exists()
+    assert (
+        runtime.run_dir
+        / "action_001_pick"
+        / "pick_scene_rgb.png"
     ).exists()
 
 

@@ -8,13 +8,13 @@ pipeline:
   arm: left
   place_depth_patch_px: 9
   # Calibrate before real execution. Null is accepted only without --execute.
-  place_offset_world_x_m: -0.10
+  place_offset_world_x_m: -0.07
   request_timeout_s: 120.0
 
 detector:
   type: yolo
   # Use the trained closed-set tabletop checkpoint for real X5 execution.
-  model_path: train_yolo/runs/agenticlab_objects_6cls_red_bin_yolo26s_ndjson_3/weights/best.pt
+  model_path: train_yolo/runs/agenticlab_red_bin_002_yolo26s/weights/best.pt
   confidence: 0.25
   image_size: 960
 
@@ -30,6 +30,9 @@ x5_pick:
   gripper_arm: left
   expected_grip_status: 2
   max_retries: 2
+  # Extra AnyGrasp inference attempts when no candidate is returned or all
+  # returned candidates fail X5 IK / joint-limit feasibility.
+  grasp_replan_attempts: 10
 
 x5_place:
   default_place_orientation_rotvec: [1.2172784, 1.2123690, 1.2159012]

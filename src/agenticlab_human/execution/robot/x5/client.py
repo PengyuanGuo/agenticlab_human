@@ -12,6 +12,7 @@ import requests
 from PIL import Image
 
 from agenticlab_human.execution.robot.x5.contracts import (
+    CheckIKPointCommand,
     GetStateCommand,
     HealthResponse,
     InitGripperCommand,
@@ -158,6 +159,27 @@ class X5HTTPClient:
             request_id=request_id,
         )
 
+    def check_ik_point(
+        self,
+        arm: str,
+        tcp_pose_xyz_rotvec: list[float],
+        *,
+        inverse_type: int = 0,
+        seed_joints_rad: list[float] | None = None,
+        request_id: str | None = None,
+    ) -> RobotCommandResponse:
+        """Ask the X5 server to solve SDK IK without sending motion."""
+
+        return self.send_command(
+            CheckIKPointCommand(
+                arm=arm,
+                tcp_pose_xyz_rotvec=tcp_pose_xyz_rotvec,
+                inverse_type=inverse_type,
+                seed_joints_rad=seed_joints_rad,
+            ),
+            request_id=request_id,
+        )
+
     def stop(self, arm: str = "all") -> RobotCommandResponse:
         return self.send_command(StopCommand(arm=arm))
 
@@ -224,12 +246,17 @@ class X5HTTPClient:
         return {"timeout": self.timeout_s}
 
 
-def save_rgbd_frame(frame: RGBDFrame, save_dir: str | Path) -> dict[str, Path]:
+def save_rgbd_frame(
+    frame: RGBDFrame,
+    save_dir: str | Path,
+    *,
+    stem: str | None = None,
+) -> dict[str, Path]:
     """Save an HTTP-delivered RGB-D frame without requiring the Orbbec SDK."""
 
     output_dir = Path(save_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    stem = frame.frame_id.replace("/", "_").replace("\\", "_")
+    stem = (stem or frame.frame_id).replace("/", "_").replace("\\", "_")
 
     rgb_path = output_dir / f"{stem}_rgb.png"
     depth_png_path = output_dir / f"{stem}_depth_mm.png"

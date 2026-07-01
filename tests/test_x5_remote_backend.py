@@ -299,7 +299,7 @@ def test_pick_failure_stops_robot():
     assert [call[0] for call in client.calls][-2:] == ["close_gripper", "stop"]
 
 
-def test_place_executes_preplace_place_open_home():
+def test_place_executes_preplace_place_open_preplace_home():
     client = FakeX5HTTPClient()
     backend = _backend(client)
     backend.initialize()
@@ -307,6 +307,7 @@ def test_place_executes_preplace_place_open_home():
         "number-block",
         grasp_candidates=[_known_grasp()],
     )
+    call_count_before_place = len(client.calls)
 
     result = backend.place(
         "number-block",
@@ -323,11 +324,20 @@ def test_place_executes_preplace_place_open_home():
     assert steps[0] == "preplace"
     assert "retreat" not in steps
     assert "check_gripper" not in steps
-    assert steps.index("preplace") < steps.index("place")
-    assert steps.index("place") < steps.index("open_gripper")
-    assert steps.index("open_gripper") < steps.index("home")
+    assert steps[:4] == ["preplace", "place", "open_gripper", "preplace"]
     assert steps[-1] == "home"
     assert "release_retreat" not in steps
+    assert [
+        call[0]
+        for call in client.calls[
+            call_count_before_place : call_count_before_place + 4
+        ]
+    ] == [
+        "movej_point",
+        "movel_point",
+        "open_gripper",
+        "movel_point",
+    ]
 
     check_calls = [
         call

@@ -187,6 +187,28 @@ def test_cartesian_point_commands_update_mock_tcp_pose():
     assert movel_result.state_after.arms["left"].tcp_pose_xyzw[:3] == movel_target[:3]
 
 
+def test_check_ik_point_returns_metadata_without_motion():
+    target = [0.2, -0.1, 0.4, 0.0, 0.0, np.pi / 2.0]
+    with TestClient(_build_app()) as transport:
+        client = X5HTTPClient("http://testserver", timeout_s=None, session=transport)
+
+        result = client.check_ik_point(
+            "left",
+            target,
+            inverse_type=0,
+            seed_joints_rad=[0.0] * 7,
+            request_id="test-check-ik",
+        )
+
+    assert result.success is True
+    assert result.request_id == "test-check-ik"
+    assert result.accepted_command["type"] == "check_ik_point"
+    assert result.accepted_command["inverse_type"] == 0
+    assert result.metadata["ik_joints_rad"] == [0.0] * 7
+    assert result.metadata["ik_joints_deg"] == [0.0] * 7
+    assert result.state_after.arms["left"].tcp_pose_xyzw[:3] == [0.0, 0.0, 0.0]
+
+
 def test_single_gripper_command_round_trip_updates_robot_level_state():
     with TestClient(_build_app()) as transport:
         client = X5HTTPClient("http://testserver", timeout_s=None, session=transport)
@@ -330,6 +352,30 @@ def test_client_preserves_robot_command_error_from_http_400():
 
     assert result.success is False
     assert result.error == "X5 rejected Cartesian target"
+
+
+def test_client_preserves_unexpected_robot_command_exception_as_json_error():
+    class CrashingController(MockX5Controller):
+        def execute(self, command):
+            if command.type == "movej_point":
+                raise AttributeError("xapi movj rejected target point")
+            return super().execute(command)
+
+    app = create_app(
+        camera=MockRGBDCamera(),
+        controller=CrashingController(),
+    )
+    with TestClient(app) as transport:
+        client = X5HTTPClient("http://testserver", timeout_s=None, session=transport)
+
+        result = client.movej_point(
+            "left",
+            [0.2, -0.1, 0.4, 0.0, 0.0, 0.0],
+        )
+
+    assert result.success is False
+    assert result.error == "xapi movj rejected target point"
+    assert result.metadata["error_type"] == "AttributeError"
 
 
 def test_tcp_state_quaternion_converts_to_cartesian_command_rotvec():
